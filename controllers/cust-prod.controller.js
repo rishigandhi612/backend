@@ -38,7 +38,7 @@ const getAllCustomerProducts = async (req, res, next) => {
       let allproducts = await Product.find();
   
       // Find the product to update based on productId
-      let productToUpdate = allproducts.find(product => product._id.toString() === CustomerProductData.productId);
+      let productToUpdate = allproducts.find(product => product._id.toString() === CustomerProductData.product);
      
       if (!productToUpdate) {
         return res.json({
