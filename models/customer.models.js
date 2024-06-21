@@ -43,6 +43,8 @@ const customerschema = new mongoose.Schema({
     min_length:10,
     required:true
   }
+},{
+  timestamps:true
 });
 
 module.exports = mongoose.model("customers", customerschema);

@@ -42,6 +42,8 @@ const customerRoutes = require('./routes/customer.routes')
 app.use('/customer',customerRoutes)
 const ProductRoutes = require('./routes/product.routes')
 app.use('/product',ProductRoutes)
+const CustomerProductRoutes = require('./routes/cust-prod.routes')
+app.use('/custprod',CustomerProductRoutes)
 
 //call function connect database
 connectDatabase();
