@@ -13,12 +13,13 @@ const getAllCustomerProducts = async (req, res, next) => {
       data: response,
     });
   } catch (error) {
-    res.json({
+    res.status(500).json({
       success: false,
-      error: error,
+      error: error.message,
     });
   }
 };
+
 const getCustomerProductsbyId = async (req, res, next) => {
   const id = req.params.id;
   try {
@@ -26,66 +27,76 @@ const getCustomerProductsbyId = async (req, res, next) => {
       .populate("customer")
       .populate("product")
       .exec();
+    if (!response) {
+      return res.status(404).json({
+        success: false,
+        message: "CustomerProduct not found",
+      });
+    }
     res.json({
       success: true,
       data: response,
     });
   } catch (error) {
-    res.json({
+    res.status(500).json({
       success: false,
-      error: error,
+      error: error.message,
     });
   }
 };
+
 const createCustomerProducts = async (req, res, next) => {
-  let CustomerProductData = req.body;
+  const { customer, product, quantity } = req.body;
+
+  // Validate numeric quantity
+  if (isNaN(quantity) || parseInt(quantity) <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: "Quantity must be a positive number",
+    });
+  }
 
   try {
     // Validate Customer 
-    let CustomerInfo = await Customer.findById(req.body.customer);
-    // console.log('abc',ProductInfo)
+    let CustomerInfo = await Customer.findById(customer);
     if (!CustomerInfo) {
-      return res.json({
+      return res.status(404).json({
         success: false,
         message: "Customer not found in database",
       });
     }
+
     // Fetch product info 
-    let ProductInfo = await Product.findById(req.body.product);
-    // console.log('abc',ProductInfo)
+    let ProductInfo = await Product.findById(product);
     if (!ProductInfo) {
-      return res.json({
+      return res.status(404).json({
         success: false,
         message: "Product not found in database",
       });
     }
 
-    console.log('Order qty',req.body.quantity)
-    console.log('Product qty',ProductInfo.quantity)
-
-    if (parseInt(req.body.quantity) > parseInt(ProductInfo.quantity)) {
-      return res.json({
+    const requestedQuantity = parseInt(quantity);
+    if (requestedQuantity > ProductInfo.quantity) {
+      return res.status(400).json({
         success: false,
         message: "Insufficient quantity",
       });
     }
+
     // Create customer product entry
-    let response = await CustomerProduct.create(CustomerProductData);
+    let response = await CustomerProduct.create({ customer, product, quantity: requestedQuantity });
 
     // Update Inventory
-    let newquantity = {quantity: parseInt(ProductInfo.quantity) - parseInt(req.body.quantity) };
-    let productupdate = await Product.findByIdAndUpdate(
-      req.body.product,
-      newquantity
-    );
+    let newQuantity = ProductInfo.quantity - requestedQuantity;
+    await Product.findByIdAndUpdate(product, { quantity: newQuantity });
+
     // Respond with success
-    return res.json({
+    return res.status(201).json({
       success: true,
       data: response,
     });
   } catch (error) {
-    // Catch any errors
-    return res.json({
+    return res.status(500).json({
       success: false,
       error: error.message,
     });
@@ -93,43 +104,53 @@ const createCustomerProducts = async (req, res, next) => {
 };
 
 const updateCustomerProducts = async (req, res, next) => {
-  let newcustomerData = req.body;
-  let pid = req.params.id;
+  const newcustomerData = req.body;
+  const pid = req.params.id;
   try {
-    let response = await CustomerProduct.findByIdAndUpdate(
-      pid,
-      newcustomerData
-    );
+    let response = await CustomerProduct.findByIdAndUpdate(pid, newcustomerData, { new: true });
+    if (!response) {
+      return res.status(404).json({
+        success: false,
+        message: "CustomerProduct not found",
+      });
+    }
     res.json({
       success: true,
       data: response,
-      newcustomerData,
     });
   } catch (error) {
-    res.json({
+    res.status(500).json({
       success: false,
-      error: error,
+      error: error.message,
     });
   }
 };
+
 const deleteCustomerProducts = async (req, res, next) => {
-  let pid = req.params.id;
+  const pid = req.params.id;
 
   try {
     let response = await CustomerProduct.findByIdAndDelete(pid);
+    if (!response) {
+      return res.status(404).json({
+        success: false,
+        message: "CustomerProduct not found",
+      });
+    }
     res.json({
       success: true,
       data: response,
-      message: "customer Deleted whose id was " + pid,
+      message: "CustomerProduct deleted whose id was " + pid,
     });
   } catch (error) {
-    res.json({
+    res.status(500).json({
       success: false,
-      error: error,
+      error: error.message,
     });
   }
 };
 
+// Export functions
 module.exports = {
   getAllCustomerProducts,
   getCustomerProductsbyId,
