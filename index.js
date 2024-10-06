@@ -44,6 +44,8 @@ const ProductRoutes = require('./routes/product.routes')
 app.use('/product',ProductRoutes)
 const CustomerProductRoutes = require('./routes/cust-prod.routes')
 app.use('/custprod',CustomerProductRoutes)
+const RegisterRoutes = require('./routes/user.routes');
+app.use('/auth',RegisterRoutes)
 
 //call function connect database
 connectDatabase();

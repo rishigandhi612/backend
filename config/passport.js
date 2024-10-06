@@ -1,30 +1,42 @@
 var passport = require('passport');
-var LocalStrategy = require('passport-local');
-var crypto = require('crypto');
-var db = require('./db');
+var LocalStrategy = require('passport-local').Strategy;
+const bcrypt = require('bcryptjs'); // For comparing hashed passwords
+const User = require('../models/user.models'); // Import your User model
 
-const users = require("../models/user.models");
+// Initialize Passport and session (assuming Express app is already defined as 'app')
+app.use(passport.initialize());
+app.use(passport.session());
+// Configure Local Strategy
+passport.use(new LocalStrategy(
+ 
+  { usernameField: 'emailid' }, // Use 'emailid' instead of default 'username'
+  function(emailid, password, done) {
+    console.log(emailid,password);
+    // Find user in the database by email
+    User.findOne({ emailid: emailid }, function (err, user) {
+      if (err) { return done(err); }  // Handle error
+      if (!user) { return done(null, false, { message: 'Incorrect email.' }); }  // No user found
 
-
-passport.use(new LocalStrategy(async function verify(username, password, cb) {
-  try {
-    const usersCollection = db.db('htbackend').collection('users');
-
-    const user = await usersCollection.findOne({ username: username });
-
-    if (!user) {
-      return cb(null, false, { message: 'Incorrect username or password.' });
-    }
-
-    // Verify the password
-    crypto.pbkdf2(password, user.salt, 310000, 32, 'sha256', function(err, hashedPassword) {
-      if (err) { return cb(err); }
-      if (!crypto.timingSafeEqual(user.hashed_password, hashedPassword)) {
-        return cb(null, false, { message: 'Incorrect username or password.' });
-      }
-      return cb(null, user);
+      // Compare the provided password with the stored hash
+      bcrypt.compare(password, user.password, function(err, isMatch) {
+        if (err) return done(err);  // Handle error during comparison
+        if (!isMatch) {
+          return done(null, false, { message: 'Incorrect password.' });
+        }
+        return done(null, user);  // If password matches, return user
+      });
     });
-  } catch (err) {
-    return cb(err);
   }
-}));
+));
+
+// Serialize user for session
+passport.serializeUser(function(user, done) {
+  done(null, user.id);  // Serialize the user ID for session
+});
+
+// Deserialize user from session
+passport.deserializeUser(function(id, done) {
+  User.findById(id, function (err, user) {
+    done(err, user);  // Deserialize the user based on the ID stored in session
+  });
+});
