@@ -1,3 +1,4 @@
+require('dotenv').config(); // Load environment variables from .env file
 const express = require("express");
 const app = express();
 const bodyParser = require("body-parser");
@@ -5,6 +6,9 @@ const connectDatabase = require("./config/db");
 const helmet = require('helmet')
 const rateLimit = require('express-rate-limit')
 const mongoSanitize = require('express-mongo-sanitize');
+
+// Import CheckAuth middleware for JWT verification
+const CheckAuth = require('./middleware/auth.middleware');
 
 app.use(helmet());
 
@@ -39,13 +43,15 @@ app.get ('/',(req,res)=>{
 
 //router
 const customerRoutes = require('./routes/customer.routes')
-app.use('/customer',customerRoutes)
+app.use('/customer',CheckAuth,customerRoutes)
 const ProductRoutes = require('./routes/product.routes')
-app.use('/product',ProductRoutes)
+app.use('/product',CheckAuth,ProductRoutes)
 const CustomerProductRoutes = require('./routes/cust-prod.routes')
-app.use('/custprod',CustomerProductRoutes)
+app.use('/custprod',CheckAuth,CustomerProductRoutes)
 const RegisterRoutes = require('./routes/user.routes');
-app.use('/auth',RegisterRoutes)
+app.use('/user',CheckAuth,RegisterRoutes)
+const LoginRoutes = require('./routes/login.routes');
+app.use('/newauth',LoginRoutes)
 
 //call function connect database
 connectDatabase();
