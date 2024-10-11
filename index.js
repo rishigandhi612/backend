@@ -6,6 +6,10 @@ const connectDatabase = require("./config/db");
 const helmet = require('helmet')
 const rateLimit = require('express-rate-limit')
 const mongoSanitize = require('express-mongo-sanitize');
+const cors = require("cors");
+
+// Use the CORS middleware
+app.use(cors());
 
 // Import CheckAuth middleware for JWT verification
 const CheckAuth = require('./middleware/auth.middleware');
@@ -51,7 +55,7 @@ app.use('/custprod',CheckAuth,CustomerProductRoutes)
 const RegisterRoutes = require('./routes/user.routes');
 app.use('/user',CheckAuth,RegisterRoutes)
 const LoginRoutes = require('./routes/login.routes');
-app.use('/newauth',LoginRoutes)
+app.use('/auth',LoginRoutes)
 
 //call function connect database
 connectDatabase();
