@@ -56,6 +56,9 @@ const RegisterRoutes = require('./routes/user.routes');
 app.use('/user',CheckAuth,RegisterRoutes)
 const LoginRoutes = require('./routes/login.routes');
 app.use('/auth',LoginRoutes)
+const dashboardRoutes = require('./routes/dashboard.routes');
+app.use('/dashboard', CheckAuth, dashboardRoutes);
+
 
 //call function connect database
 connectDatabase();
