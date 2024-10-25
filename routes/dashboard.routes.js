@@ -17,7 +17,7 @@ router.get('/stats', async (req, res) => {
         res.json({
             totalCustomers: customerCount,
             totalProducts: productCount,
-            totalInvoices: custProdCount,
+            totalCustProd: custProdCount,
             totalUsers: userCount,
         });
     } catch (error) {

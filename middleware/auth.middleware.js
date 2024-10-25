@@ -18,12 +18,7 @@ const CheckAuth = (req, res, next) => {
     req.user = decoded; // Attach user data to the request object
     next(); // Proceed to the next middleware or route handler
   } catch (err) {
-    if (err.name === 'TokenExpiredError') {
-      return res.status(401).json({ message: 'Token has expired.' });
-    } else if (err.name === 'JsonWebTokenError') {
-      return res.status(400).json({ message: 'Invalid token.' });
-    }
-    return res.status(400).json({ message: 'Authentication error.' });
+    return res.status(400).json({ message: 'Invalid token.' });
   }
 };
 
