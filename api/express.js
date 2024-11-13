@@ -4,7 +4,7 @@ require('dotenv').config();  // Load environment variables from .env file
 const express = require("express");
 const app = express();
 const bodyParser = require("body-parser");
-const connectDatabase = require("./config/db");
+const connectDatabase = require("../config/db");
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('express-mongo-sanitize');
@@ -14,7 +14,7 @@ const cors = require("cors");
 app.use(cors());
 
 // Import CheckAuth middleware for JWT verification
-const CheckAuth = require('./middleware/auth.middleware');
+const CheckAuth = require('../middleware/auth.middleware');
 
 // Use Helmet for security
 app.use(helmet());
@@ -41,22 +41,22 @@ app.get('/', (req, res) => {
 });
 
 // Routes (define your API endpoints)
-const customerRoutes = require('./routes/customer.routes');
+const customerRoutes = require('../routes/customer.routes');
 app.use('/customer', CheckAuth, customerRoutes);
 
-const productRoutes = require('./routes/product.routes');
+const productRoutes = require('../routes/product.routes');
 app.use('/product', CheckAuth, productRoutes);
 
-const customerProductRoutes = require('./routes/cust-prod.routes');
+const customerProductRoutes = require('../routes/cust-prod.routes');
 app.use('/custprod', CheckAuth, customerProductRoutes);
 
-const registerRoutes = require('./routes/user.routes');
+const registerRoutes = require('../routes/user.routes');
 app.use('/user', CheckAuth, registerRoutes);
 
-const loginRoutes = require('./routes/login.routes');
+const loginRoutes = require('../routes/login.routes');
 app.use('/auth', loginRoutes);  // No CheckAuth middleware for login route
 
-const dashboardRoutes = require('./routes/dashboard.routes');
+const dashboardRoutes = require('../routes/dashboard.routes');
 app.use('/dashboard', CheckAuth, dashboardRoutes);
 
 // Call the function to connect to MongoDB
