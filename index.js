@@ -63,5 +63,5 @@ app.use('/dashboard', CheckAuth, dashboardRoutes);
 //call function connect database
 connectDatabase();
 
-
 app.listen(3001,()=> console.log('server is running on port 3001'))
+module.exports = app;
