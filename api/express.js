@@ -39,6 +39,9 @@ app.use(mongoSanitize());
 app.get('/', (req, res) => {
   res.send('Server is running');
 });
+app.get('/test', (req, res) => {
+  res.json({ message: "Vercel is working!" });
+});
 
 // Routes (define your API endpoints)
 const customerRoutes = require('../routes/customer.routes');
