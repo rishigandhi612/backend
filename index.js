@@ -10,10 +10,12 @@ const cors = require("cors");
 
 // Use the CORS middleware
 app.use(cors({
-	origin: ['http://localhost:8080'], // Allow frontend origin
+	origin: ['http://localhost:8080','https://frontend-gamma-seven-38.vercel.app/' ], // Allow frontend origin
 	methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allow these HTTP methods
-	allowedHeaders: ['Content-Type', 'Authorization'] // Allow these headers
+	allowedHeaders: ['Content-Type', 'Authorization'], // Allow these headers
+	credentials: true // Allow credentials (cookies, Authorization header, etc.)
   }));
+    
 // Import CheckAuth middleware for JWT verification
 const CheckAuth = require('./middleware/auth.middleware');
 
