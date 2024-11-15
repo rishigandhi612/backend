@@ -9,8 +9,11 @@ const mongoSanitize = require('express-mongo-sanitize');
 const cors = require("cors");
 
 // Use the CORS middleware
-app.use(cors());
-
+app.use(cors({
+	origin: ['http://localhost:8080'], // Allow frontend origin
+	methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allow these HTTP methods
+	allowedHeaders: ['Content-Type', 'Authorization'] // Allow these headers
+  }));
 // Import CheckAuth middleware for JWT verification
 const CheckAuth = require('./middleware/auth.middleware');
 
