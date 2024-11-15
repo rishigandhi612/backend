@@ -6,15 +6,15 @@ const connectDatabase = require("./config/db");
 const helmet = require('helmet')
 const rateLimit = require('express-rate-limit')
 const mongoSanitize = require('express-mongo-sanitize');
-const cors = require("cors");
+// const cors = require("cors");
 
-// Use the CORS middleware
-app.use(cors({
-  origin: ['http://localhost:8080', 'https://frontend-gamma-seven-38.vercel.app/'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true  // Allow credentials (cookies, Authorization header, etc.)
-}));
+// // Use the CORS middleware
+// app.use(cors({
+//   origin: ['http://localhost:8080', 'https://frontend-gamma-seven-38.vercel.app/'],
+//   methods: ['GET', 'POST', 'PUT', 'DELETE'],
+//   allowedHeaders: ['Content-Type', 'Authorization'],
+//   credentials: true  // Allow credentials (cookies, Authorization header, etc.)
+// }));
     
 // Import CheckAuth middleware for JWT verification
 const CheckAuth = require('./middleware/auth.middleware');
