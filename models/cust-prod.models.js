@@ -3,20 +3,34 @@ const mongoose = require("mongoose");
 const CustomerProductschema = new mongoose.Schema({
   customer: {
     type: mongoose.Schema.Types.ObjectId,
-    ref:'customers'
+    ref:'customers',
+    required: true,
   },
-  product: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref:'products'
+  products: [
+    {
+      product: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Product',
+        required: true,
+      },
+      name: {
+        type: String,  
+        required: true,
+      },
+      quantity: {
+        type: Number,
+        required: true,
+      },
+      unit_price: {
+        type: Number,
+        required: true,
+      },
+    },
+  ],
+  totalAmount: {
+    type: Number,
+    required: true,
   },
-  quantity:{
-    type:Number,
-    required:true
-  },
-  unit_price:{
-    type:Number,
-    required:true
-  }
   
 },{
   timestamps:true
