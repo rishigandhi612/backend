@@ -85,9 +85,12 @@ const createCustomerProducts = async (req, res, next) => {
     // Array to hold product details for the invoice
     const invoiceProducts = [];
 
+    // Variable to calculate the total amount for the invoice (if not sent)
+    let calculatedTotalAmount = 0;
+
     // Process each product in the request
     for (const productData of products) {
-      const { product, quantity, unitPrice } = productData;
+      const { product, quantity, unitPrice, totalPrice } = productData;
 
       // Validate product quantity and unit price
       if (isNaN(quantity) || parseInt(quantity) <= 0) {
@@ -100,6 +103,12 @@ const createCustomerProducts = async (req, res, next) => {
         return res.status(400).json({
           success: false,
           message: "Unit price must be a positive number for each product",
+        });
+      }
+      if (isNaN(totalPrice) || parseFloat(totalPrice) <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Total price must be a positive number for each product",
         });
       }
 
@@ -127,9 +136,13 @@ const createCustomerProducts = async (req, res, next) => {
         hsn_code: ProductInfo.hsn_code, // Add product HSN code
         quantity,                      // Quantity ordered
         desc: ProductInfo.desc,        // Product description
-        price: ProductInfo.price,      // Product price
+        price: ProductInfo.price,      // Product price (from the Product document)
         unit_price: parseFloat(unitPrice), // Unit price sent by the user
+        total_price: parseFloat(totalPrice), // Total price sent by the user
       });
+
+      // Update total amount for the invoice
+      calculatedTotalAmount += totalPrice;
 
       // Update product inventory after order processing
       let newQuantity = ProductInfo.quantity - quantity;
@@ -140,7 +153,7 @@ const createCustomerProducts = async (req, res, next) => {
     let createdInvoice = await CustomerProduct.create({
       customer: customer._id,
       products: invoiceProducts, // Include all products in one invoice
-      totalAmount: invoiceProducts.reduce((total, item) => total + (item.quantity * item.unit_price), 0), // Calculate total amount
+      totalAmount: calculatedTotalAmount, // Use calculated total amount
     });
 
     // Respond with the created invoice
@@ -155,6 +168,7 @@ const createCustomerProducts = async (req, res, next) => {
     });
   }
 };
+
 
 
 const updateCustomerProducts = async (req, res, next) => {

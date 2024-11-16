@@ -25,6 +25,10 @@ const CustomerProductschema = new mongoose.Schema({
         type: Number,
         required: true,
       },
+      total_price: {
+        type: Number,
+        required: true,
+      },
     },
   ],
   totalAmount: {
