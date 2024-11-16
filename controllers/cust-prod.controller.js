@@ -2,11 +2,13 @@ const CustomerProduct = require("../models/cust-prod.models");
 const Product = require("../models/product.models");
 const Customer = require("../models/customer.models");
 
+// getAllCustomerProducts function
+// getAllCustomerProducts function
 const getAllCustomerProducts = async (req, res, next) => {
   try {
     let response = await CustomerProduct.find()
-      .populate("customer")
-      .populate("product")
+      .populate("customer") // Populate customer details
+      .populate("products.product") // Populate product details inside the products array
       .exec();
     res.json({
       success: true,
@@ -20,19 +22,24 @@ const getAllCustomerProducts = async (req, res, next) => {
   }
 };
 
+
+// getCustomerProductsbyId function
 const getCustomerProductsbyId = async (req, res, next) => {
   const id = req.params.id;
   try {
+    // Fetch a single customer product (invoice) and populate customer and product details
     let response = await CustomerProduct.findById(id)
-      .populate("customer")
-      .populate("product")
+      .populate('customer') // Populate customer details
+      .populate('products.product') // Populate the product details for each product in the products array
       .exec();
+    
     if (!response) {
       return res.status(404).json({
         success: false,
         message: "CustomerProduct not found",
       });
     }
+    
     res.json({
       success: true,
       data: response,
