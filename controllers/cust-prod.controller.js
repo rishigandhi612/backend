@@ -46,13 +46,21 @@ const getCustomerProductsbyId = async (req, res, next) => {
 };
 
 const createCustomerProducts = async (req, res, next) => {
-  const { customer, product, quantity } = req.body;
+  const { customer, product, quantity, unit_price } = req.body;  // Include unit_price in the payload
 
   // Validate numeric quantity
   if (isNaN(quantity) || parseInt(quantity) <= 0) {
     return res.status(400).json({
       success: false,
       message: "Quantity must be a positive number",
+    });
+  }
+
+  // Validate numeric unit_price
+  if (isNaN(unit_price) || parseFloat(unit_price) <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: "Unit price must be a positive number",
     });
   }
 
@@ -83,8 +91,13 @@ const createCustomerProducts = async (req, res, next) => {
       });
     }
 
-    // Create customer product entry
-    let response = await CustomerProduct.create({ customer, product, quantity: requestedQuantity });
+    // Create customer product entry including unit_price
+    let response = await CustomerProduct.create({
+      customer,
+      product,
+      quantity: requestedQuantity,
+      unit_price: parseFloat(unit_price),  // Save unit price
+    });
 
     // Update Inventory
     let newQuantity = ProductInfo.quantity - requestedQuantity;
@@ -102,6 +115,7 @@ const createCustomerProducts = async (req, res, next) => {
     });
   }
 };
+
 
 const updateCustomerProducts = async (req, res, next) => {
   const newcustomerData = req.body;
