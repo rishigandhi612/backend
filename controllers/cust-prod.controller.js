@@ -121,6 +121,12 @@ const updateCustomerProducts = async (req, res, next) => {
   const newcustomerData = req.body;
   const pid = req.params.id;
   try {
+    if (newcustomerData.unit_price && isNaN(newcustomerData.unit_price)) {
+      return res.status(400).json({
+        success: false,
+        message: "Unit price must be a valid number",
+      });
+    }
     let response = await CustomerProduct.findByIdAndUpdate(pid, newcustomerData, { new: true });
     if (!response) {
       return res.status(404).json({
