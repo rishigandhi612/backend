@@ -10,7 +10,7 @@ const cors = require("cors");
 
 // Use the CORS middleware
 app.use(cors({
-  origin: ['http://localhost:8080', 'https://frontend-gamma-seven-38.vercel.app'],  // No trailing slash
+  origin: ['http://localhost:8080', 'https://frontend-gamma-seven-38.vercel.app', 'https://app.rishigandhi.xyz', 'https://web.rishigandhi.xyz'],  // No trailing slash
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true  // Allow credentials (cookies, Authorization header, etc.)
