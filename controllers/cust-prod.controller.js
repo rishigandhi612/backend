@@ -91,7 +91,14 @@ const createCustomerProducts = async (req, res, next) => {
     // Process each product in the request
     for (const productData of products) {
       const { product, width, quantity, unitPrice, totalPrice } = productData;
-
+      // Validate product width
+      if (width && isNaN(width)) {
+        return res.status(400).json({
+          success: false,
+          message: "Width must be a valid number for each product",
+        });
+      }
+      
       // Validate product quantity and unit price
       if (isNaN(quantity) || parseInt(quantity) <= 0) {
         return res.status(400).json({
@@ -128,6 +135,7 @@ const createCustomerProducts = async (req, res, next) => {
           message: `Insufficient stock for product ${ProductInfo.name}`,
         });
       }
+      
 
       // Add the full product details (including name, hsn_code, desc, and price) to the invoice products array
       invoiceProducts.push({
