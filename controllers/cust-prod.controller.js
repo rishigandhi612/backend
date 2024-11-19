@@ -90,7 +90,7 @@ const createCustomerProducts = async (req, res, next) => {
 
     // Process each product in the request
     for (const productData of products) {
-      const { product, quantity, unitPrice, totalPrice } = productData;
+      const { product, width, quantity, unitPrice, totalPrice } = productData;
 
       // Validate product quantity and unit price
       if (isNaN(quantity) || parseInt(quantity) <= 0) {
@@ -134,6 +134,7 @@ const createCustomerProducts = async (req, res, next) => {
         product: product._id,
         name: ProductInfo.name,        // Add product name
         hsn_code: ProductInfo.hsn_code, // Add product HSN code
+        width,
         quantity,                      // Quantity ordered
         desc: ProductInfo.desc,        // Product description
         price: ProductInfo.price,      // Product price (from the Product document)

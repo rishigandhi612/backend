@@ -17,6 +17,10 @@ const CustomerProductschema = new mongoose.Schema({
         type: String,  
         required: true,
       },
+      width: {
+        type: Number,
+        required: true,
+      },
       quantity: {
         type: Number,
         required: true,
