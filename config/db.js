@@ -2,12 +2,14 @@ const mongoose = require("mongoose");
 
 const connectDB = async () => {
   try {
-    await mongoose.connect(
-      "mongodb+srv://admin:admin123@learning.okjt39f.mongodb.net/htbackend"
-    );
+    const mongoURI = process.env.MONGODB_URI; // Get MongoDB URI from the environment variable
+    if (!mongoURI) {
+      throw new Error("MongoDB URI not found in environment variables.");
+    }
+    await mongoose.connect(mongoURI);
     console.log("Database connected");
   } catch (error) {
-    console.log("Connection error" + error);
+    console.error("Connection error: " + error);
   }
 };
 

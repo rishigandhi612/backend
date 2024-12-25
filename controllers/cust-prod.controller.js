@@ -54,7 +54,7 @@ const getCustomerProductsbyId = async (req, res, next) => {
 
 
 const createCustomerProducts = async (req, res, next) => {
-  const { customer, products } = req.body; // Extract customer and products from the request body
+  const { customer, products, otherCharges, cgst, sgst } = req.body; // Extract additional fields
 
   // Validate customer data
   if (!customer || !customer._id) {
@@ -85,21 +85,20 @@ const createCustomerProducts = async (req, res, next) => {
     // Array to hold product details for the invoice
     const invoiceProducts = [];
 
-    // Variable to calculate the total amount for the invoice (if not sent)
+    // Variable to calculate the total amount for the invoice
     let calculatedTotalAmount = 0;
 
     // Process each product in the request
     for (const productData of products) {
       const { product, width, quantity, unitPrice, totalPrice } = productData;
-      // Validate product width
+
+      // Validate product fields
       if (width && isNaN(width)) {
         return res.status(400).json({
           success: false,
           message: "Width must be a valid number for each product",
         });
       }
-      
-      // Validate product quantity and unit price
       if (isNaN(quantity) || parseInt(quantity) <= 0) {
         return res.status(400).json({
           success: false,
@@ -135,34 +134,43 @@ const createCustomerProducts = async (req, res, next) => {
           message: `Insufficient stock for product ${ProductInfo.name}`,
         });
       }
-      
 
-      // Add the full product details (including name, hsn_code, desc, and price) to the invoice products array
+      // Add product details to the invoice
       invoiceProducts.push({
         product: product._id,
-        name: ProductInfo.name,        // Add product name
-        hsn_code: ProductInfo.hsn_code, // Add product HSN code
+        name: ProductInfo.name,
+        hsn_code: ProductInfo.hsn_code,
         width,
-        quantity,                      // Quantity ordered
-        desc: ProductInfo.desc,        // Product description
-        price: ProductInfo.price,      // Product price (from the Product document)
-        unit_price: parseFloat(unitPrice), // Unit price sent by the user
-        total_price: parseFloat(totalPrice), // Total price sent by the user
+        quantity,
+        desc: ProductInfo.desc,
+        price: ProductInfo.price,
+        unit_price: parseFloat(unitPrice),
+        total_price: parseFloat(totalPrice),
       });
 
       // Update total amount for the invoice
       calculatedTotalAmount += totalPrice;
 
-      // Update product inventory after order processing
+      // Update product inventory
       let newQuantity = ProductInfo.quantity - quantity;
       await Product.findByIdAndUpdate(product._id, { quantity: newQuantity });
     }
 
-    // Create the CustomerProduct with all product details
+    // Calculate grand total
+    const totalWithOtherCharges = calculatedTotalAmount + (parseFloat(otherCharges) || 0);
+    const cgstAmount = totalWithOtherCharges * (parseFloat(cgst) || 0) / 100;
+    const sgstAmount = totalWithOtherCharges * (parseFloat(sgst) || 0) / 100;
+    const grandTotal = Math.round(totalWithOtherCharges + cgstAmount + sgstAmount);
+
+    // Create the invoice
     let createdInvoice = await CustomerProduct.create({
       customer: customer._id,
-      products: invoiceProducts, // Include all products in one invoice
-      totalAmount: calculatedTotalAmount, // Use calculated total amount
+      products: invoiceProducts,
+      otherCharges: parseFloat(otherCharges) || 0,
+      cgst: cgstAmount,
+      sgst: sgstAmount,
+      totalAmount: calculatedTotalAmount,
+      grandTotal,
     });
 
     // Respond with the created invoice
@@ -178,25 +186,95 @@ const createCustomerProducts = async (req, res, next) => {
   }
 };
 
-
-
 const updateCustomerProducts = async (req, res, next) => {
-  const newcustomerData = req.body;
+  const updatedData = req.body;
   const pid = req.params.id;
+
   try {
-    if (newcustomerData.unit_price && isNaN(newcustomerData.unit_price)) {
+    // Validate the presence of products if provided
+    if (updatedData.products && (!Array.isArray(updatedData.products) || updatedData.products.length === 0)) {
       return res.status(400).json({
         success: false,
-        message: "Unit price must be a valid number",
+        message: "You must provide a valid array of products",
       });
     }
-    let response = await CustomerProduct.findByIdAndUpdate(pid, newcustomerData, { new: true });
+
+    // Validate products data
+    let totalAmount = 0;
+    const updatedProducts = [];
+
+    if (updatedData.products) {
+      for (const productData of updatedData.products) {
+        const { product, width, quantity, unit_price, total_price } = productData;
+
+        // Validate product fields
+        if (width && isNaN(width)) {
+          return res.status(400).json({
+            success: false,
+            message: "Width must be a valid number for each product",
+          });
+        }
+        if (isNaN(quantity) || parseInt(quantity) <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Quantity must be a positive number for each product",
+          });
+        }
+        if (isNaN(unit_price) || parseFloat(unit_price) <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Unit price must be a positive number for each product",
+          });
+        }
+        if (isNaN(total_price) || parseFloat(total_price) <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Total price must be a positive number for each product",
+          });
+        }
+
+        // Add the product details to the updated products list
+        updatedProducts.push({
+          product,
+          width,
+          quantity,
+          unit_price: parseFloat(unit_price),
+          total_price: parseFloat(total_price),
+        });
+
+        // Update total amount
+        totalAmount += parseFloat(total_price);
+      }
+    }
+
+    // Calculate grand total
+    const otherCharges = parseFloat(updatedData.otherCharges) || 0;
+    const cgstRate = parseFloat(updatedData.cgst) || 0;
+    const sgstRate = parseFloat(updatedData.sgst) || 0;
+
+    const totalWithOtherCharges = totalAmount + otherCharges;
+    const cgstAmount = totalWithOtherCharges * (cgstRate / 100);
+    const sgstAmount = totalWithOtherCharges * (sgstRate / 100);
+    const grandTotal = Math.round(totalWithOtherCharges + cgstAmount + sgstAmount);
+
+    // Prepare updated invoice data
+    const newInvoiceData = {
+      ...updatedData,
+      products: updatedProducts.length > 0 ? updatedProducts : undefined,
+      totalAmount: totalAmount,
+      grandTotal: grandTotal,
+    };
+
+    // Update the invoice in the database
+    let response = await CustomerProduct.findByIdAndUpdate(pid, newInvoiceData, { new: true });
+
     if (!response) {
       return res.status(404).json({
         success: false,
         message: "CustomerProduct not found",
       });
     }
+
     res.json({
       success: true,
       data: response,

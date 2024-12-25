@@ -3,14 +3,16 @@ const express = require("express");
 const app = express();
 const bodyParser = require("body-parser");
 const connectDatabase = require("./config/db");
-const helmet = require('helmet')
-const rateLimit = require('express-rate-limit')
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('express-mongo-sanitize');
 const cors = require("cors");
 
-// Use the CORS middleware
+// Use the CORS middleware with dynamic origins
+const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
+
 app.use(cors({
-  origin: ['http://localhost:8080', 'https://frontend-gamma-seven-38.vercel.app', 'https://app.rishigandhi.xyz', 'https://frontend.rishigandhi.xyz'],  // No trailing slash
+  origin: allowedOrigins,  // Use allowed origins from the .env file
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true  // Allow credentials (cookies, Authorization header, etc.)
@@ -25,13 +27,13 @@ const CheckAuth = require('./middleware/auth.middleware');
 app.use(helmet());
 
 const limiter = rateLimit({
-	windowMs: 1 * 60 * 1000, // 15 minutes
-	limit: 200, // Limit each IP to 200 requests per `window` (here, per 1 minute).
-	standardHeaders: 'draft-7', // draft-6: `RateLimit-*` headers; draft-7: combined `RateLimit` header
-	legacyHeaders: false, // Disable the `X-RateLimit-*` headers.
+  windowMs: 1 * 60 * 1000, // 1 minute
+  limit: 200, // Limit each IP to 200 requests per window (here, per 1 minute)
+  standardHeaders: 'draft-7', // draft-6: `RateLimit-*` headers; draft-7: combined `RateLimit` header
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
 })
 // Apply the rate limiting middleware to all requests.
-app.use(limiter)
+app.use(limiter);
 
 // Parse application/x-www-form-urlencoded
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -75,4 +77,6 @@ app.use('/dashboard', CheckAuth, dashboardRoutes);
 // Connect to database
 connectDatabase();
 
-app.listen(3001, () => console.log('Server is running on port 3001'));
+// Start the server with dynamic port from the .env file
+const port = process.env.PORT || 3001; // Default to 3001 if not defined in .env
+app.listen(port, () => console.log(`Server is running on port ${port}`));
