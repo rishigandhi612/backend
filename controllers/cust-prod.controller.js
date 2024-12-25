@@ -156,10 +156,12 @@ const createCustomerProducts = async (req, res, next) => {
       await Product.findByIdAndUpdate(product._id, { quantity: newQuantity });
     }
 
-    // Calculate grand total
+    // Calculate grand total without affecting CGST and SGST
     const totalWithOtherCharges = calculatedTotalAmount + (parseFloat(otherCharges) || 0);
-    const cgstAmount = totalWithOtherCharges * (parseFloat(cgst) || 0) / 100;
-    const sgstAmount = totalWithOtherCharges * (parseFloat(sgst) || 0) / 100;
+
+    // Use CGST and SGST values directly from the request body
+    const cgstAmount = parseFloat(cgst) || 0;
+    const sgstAmount = parseFloat(sgst) || 0;
     const grandTotal = Math.round(totalWithOtherCharges + cgstAmount + sgstAmount);
 
     // Create the invoice
@@ -247,14 +249,12 @@ const updateCustomerProducts = async (req, res, next) => {
       }
     }
 
-    // Calculate grand total
+    // Directly use CGST and SGST values from the request body (no calculation)
     const otherCharges = parseFloat(updatedData.otherCharges) || 0;
-    const cgstRate = parseFloat(updatedData.cgst) || 0;
-    const sgstRate = parseFloat(updatedData.sgst) || 0;
+    const cgstAmount = parseFloat(updatedData.cgst) || 0;
+    const sgstAmount = parseFloat(updatedData.sgst) || 0;
 
     const totalWithOtherCharges = totalAmount + otherCharges;
-    const cgstAmount = totalWithOtherCharges * (cgstRate / 100);
-    const sgstAmount = totalWithOtherCharges * (sgstRate / 100);
     const grandTotal = Math.round(totalWithOtherCharges + cgstAmount + sgstAmount);
 
     // Prepare updated invoice data
@@ -263,6 +263,8 @@ const updateCustomerProducts = async (req, res, next) => {
       products: updatedProducts.length > 0 ? updatedProducts : undefined,
       totalAmount: totalAmount,
       grandTotal: grandTotal,
+      cgst: cgstAmount, // Keep CGST from the request body as is
+      sgst: sgstAmount, // Keep SGST from the request body as is
     };
 
     // Update the invoice in the database
