@@ -54,7 +54,7 @@ const getCustomerProductsbyId = async (req, res, next) => {
 
 
 const createCustomerProducts = async (req, res, next) => {
-  const { customer, products, otherCharges, cgst, sgst } = req.body; // Extract additional fields
+  const { customer, products, otherCharges, cgst, sgst,grandTotal } = req.body; // Extract additional fields
 
   // Validate customer data
   if (!customer || !customer._id) {
@@ -117,6 +117,12 @@ const createCustomerProducts = async (req, res, next) => {
           message: "Total price must be a positive number for each product",
         });
       }
+      if (isNaN(grandTotal) || parseFloat(grandTotal) <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Grand Total must be a positive number",
+        });
+      }
 
       // Fetch product info from the database
       let ProductInfo = await Product.findById(product._id);
@@ -162,7 +168,7 @@ const createCustomerProducts = async (req, res, next) => {
     // Use CGST and SGST values directly from the request body
     const cgstAmount = parseFloat(cgst) || 0;
     const sgstAmount = parseFloat(sgst) || 0;
-    const grandTotal = Math.round(totalWithOtherCharges + cgstAmount + sgstAmount);
+    const grandTotal = parseFloat(grandTotal);
 
     // Create the invoice
     let createdInvoice = await CustomerProduct.create({
@@ -293,25 +299,47 @@ const deleteCustomerProducts = async (req, res, next) => {
   const pid = req.params.id;
 
   try {
-    let response = await CustomerProduct.findByIdAndDelete(pid);
-    if (!response) {
+    // Check if the ID is valid
+    if (!pid || pid.length !== 24) { // MongoDB ObjectId is 24 characters long
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or missing CustomerProduct ID",
+      });
+    }
+
+    // Check if the document exists
+    const product = await CustomerProduct.findById(pid);
+    if (!product) {
       return res.status(404).json({
         success: false,
         message: "CustomerProduct not found",
       });
     }
+
+    // Delete the document
+    const response = await CustomerProduct.findByIdAndDelete(pid);
+    if (!response) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to delete CustomerProduct",
+      });
+    }
+
+    // Respond with success
     res.json({
       success: true,
       data: response,
-      message: "CustomerProduct deleted whose id was " + pid,
+      message: `CustomerProduct with id ${pid} deleted successfully`,
     });
   } catch (error) {
+    console.error("Error deleting CustomerProduct:", error.message);
     res.status(500).json({
       success: false,
       error: error.message,
     });
   }
 };
+
 
 // Export functions
 module.exports = {
