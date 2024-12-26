@@ -54,9 +54,8 @@ const getCustomerProductsbyId = async (req, res, next) => {
 
 
 const createCustomerProducts = async (req, res, next) => {
-  const { customer, products, otherCharges, cgst, sgst,grandTotal } = req.body; // Extract additional fields
+  const { customer, products, otherCharges, cgst, sgst, grandTotal } = req.body;
 
-  // Validate customer data
   if (!customer || !customer._id) {
     return res.status(400).json({
       success: false,
@@ -64,7 +63,6 @@ const createCustomerProducts = async (req, res, next) => {
     });
   }
 
-  // Validate products array
   if (!Array.isArray(products) || products.length === 0) {
     return res.status(400).json({
       success: false,
@@ -72,8 +70,14 @@ const createCustomerProducts = async (req, res, next) => {
     });
   }
 
+  if (isNaN(grandTotal) || parseFloat(grandTotal) <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: "Grand Total must be a positive number",
+    });
+  }
+
   try {
-    // Fetch customer info from the database
     let CustomerInfo = await Customer.findById(customer._id);
     if (!CustomerInfo) {
       return res.status(404).json({
@@ -82,49 +86,19 @@ const createCustomerProducts = async (req, res, next) => {
       });
     }
 
-    // Array to hold product details for the invoice
     const invoiceProducts = [];
-
-    // Variable to calculate the total amount for the invoice
     let calculatedTotalAmount = 0;
 
-    // Process each product in the request
     for (const productData of products) {
       const { product, width, quantity, unitPrice, totalPrice } = productData;
 
-      // Validate product fields
-      if (width && isNaN(width)) {
-        return res.status(400).json({
-          success: false,
-          message: "Width must be a valid number for each product",
-        });
-      }
       if (isNaN(quantity) || parseInt(quantity) <= 0) {
         return res.status(400).json({
           success: false,
           message: "Quantity must be a positive number for each product",
         });
       }
-      if (isNaN(unitPrice) || parseFloat(unitPrice) <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Unit price must be a positive number for each product",
-        });
-      }
-      if (isNaN(totalPrice) || parseFloat(totalPrice) <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Total price must be a positive number for each product",
-        });
-      }
-      if (isNaN(grandTotal) || parseFloat(grandTotal) <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Grand Total must be a positive number",
-        });
-      }
 
-      // Fetch product info from the database
       let ProductInfo = await Product.findById(product._id);
       if (!ProductInfo) {
         return res.status(404).json({
@@ -133,7 +107,6 @@ const createCustomerProducts = async (req, res, next) => {
         });
       }
 
-      // Check stock availability
       if (quantity > ProductInfo.quantity) {
         return res.status(400).json({
           success: false,
@@ -168,7 +141,6 @@ const createCustomerProducts = async (req, res, next) => {
     // Use CGST and SGST values directly from the request body
     const cgstAmount = parseFloat(cgst) || 0;
     const sgstAmount = parseFloat(sgst) || 0;
-    const grandTotal = parseFloat(grandTotal);
 
     // Create the invoice
     let createdInvoice = await CustomerProduct.create({
@@ -178,7 +150,7 @@ const createCustomerProducts = async (req, res, next) => {
       cgst: cgstAmount,
       sgst: sgstAmount,
       totalAmount: calculatedTotalAmount,
-      grandTotal,
+      grandTotal: parseFloat(grandTotal),
     });
 
     // Respond with the created invoice
