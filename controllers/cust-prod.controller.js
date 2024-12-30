@@ -167,25 +167,26 @@ const createCustomerProducts = async (req, res, next) => {
 };
 
 const updateCustomerProducts = async (req, res, next) => {
+  console.log(req.body);
   const updatedData = req.body;
   const pid = req.params.id;
 
   try {
-    // Validate the presence of products if provided
-    if (updatedData.products && (!Array.isArray(updatedData.products) || updatedData.products.length === 0)) {
+    // Check if the ID is valid
+    if (!pid || pid.length !== 24) {
       return res.status(400).json({
         success: false,
-        message: "You must provide a valid array of products",
+        message: "Invalid or missing CustomerProduct ID",
       });
     }
 
-    // Validate products data
+    // Initialize totalAmount and updatedProducts
     let totalAmount = 0;
     const updatedProducts = [];
 
-    if (updatedData.products) {
+    if (updatedData.products && Array.isArray(updatedData.products)) {
       for (const productData of updatedData.products) {
-        const { product, width, quantity, unit_price, total_price } = productData;
+        const { product, width, quantity, unitPrice, totalPrice } = productData;
 
         // Validate product fields
         if (width && isNaN(width)) {
@@ -200,13 +201,13 @@ const updateCustomerProducts = async (req, res, next) => {
             message: "Quantity must be a positive number for each product",
           });
         }
-        if (isNaN(unit_price) || parseFloat(unit_price) <= 0) {
+        if (isNaN(unitPrice) || parseFloat(unitPrice) <= 0) {
           return res.status(400).json({
             success: false,
             message: "Unit price must be a positive number for each product",
           });
         }
-        if (isNaN(total_price) || parseFloat(total_price) <= 0) {
+        if (isNaN(totalPrice) || parseFloat(totalPrice) <= 0) {
           return res.status(400).json({
             success: false,
             message: "Total price must be a positive number for each product",
@@ -218,12 +219,12 @@ const updateCustomerProducts = async (req, res, next) => {
           product,
           width,
           quantity,
-          unit_price: parseFloat(unit_price),
-          total_price: parseFloat(total_price),
+          unitPrice: parseFloat(unitPrice),
+          totalPrice: parseFloat(totalPrice),
         });
 
         // Update total amount
-        totalAmount += parseFloat(total_price);
+        totalAmount += parseFloat(totalPrice);
       }
     }
 
@@ -232,6 +233,7 @@ const updateCustomerProducts = async (req, res, next) => {
     const cgstAmount = parseFloat(updatedData.cgst) || 0;
     const sgstAmount = parseFloat(updatedData.sgst) || 0;
 
+    // Calculate grand total
     const totalWithOtherCharges = totalAmount + otherCharges;
     const grandTotal = Math.round(totalWithOtherCharges + cgstAmount + sgstAmount);
 
@@ -239,8 +241,8 @@ const updateCustomerProducts = async (req, res, next) => {
     const newInvoiceData = {
       ...updatedData,
       products: updatedProducts.length > 0 ? updatedProducts : undefined,
-      totalAmount: totalAmount,
-      grandTotal: grandTotal,
+      totalAmount,
+      grandTotal,
       cgst: cgstAmount, // Keep CGST from the request body as is
       sgst: sgstAmount, // Keep SGST from the request body as is
     };
