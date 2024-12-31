@@ -1,5 +1,9 @@
 const User = require("../models/user.models");
 const bcrypt = require("bcryptjs");
+const mongoose = require("mongoose");
+
+// Utility function to validate ObjectId
+const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
 // Register a new user
 const registerUser = async (req, res) => {
@@ -9,16 +13,28 @@ const registerUser = async (req, res) => {
     // Check if the user already exists
     let user = await User.findOne({ emailid });
     if (user) {
-      return res.status(400).json({ message: "User already exists" });
+      return res.json({
+        success: false,
+        message: "User already exists",
+      });
     }
 
+    // Hash the password before saving
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
     // Create a new user
-    user = new User({ emailid, password });
+    user = new User({ emailid, password: hashedPassword });
     await user.save();
-    res.status(201).json({ message: "User registered successfully" });
+    
+    res.json({
+      success: true,
+      message: "User registered successfully",
+      data: user, // Returning the created user as the data
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
@@ -26,33 +42,60 @@ const registerUser = async (req, res) => {
 const getAllUsers = async (req, res) => {
   try {
     const users = await User.find();
-    res.status(200).json(users);
+    res.json({
+      success: true,
+      data: users, // Returning the list of all users as the data
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
 // Get a user by ID
 const getUserById = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id);
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+    const userId = req.params.id;
+
+    // Validate ObjectId
+    if (!isValidObjectId(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID",
+      });
     }
-    res.status(200).json(user);
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      data: user, // Returning the user object as the data
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 };
-
-
 
 // Update a user by ID (with password hashing)
 const updateUserById = async (req, res) => {
   try {
     let { emailid, password } = req.body;
+    const userId = req.params.id;
+
+    // Validate ObjectId
+    if (!isValidObjectId(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID",
+      });
+    }
 
     // Hash the password if it's provided
     if (password) {
@@ -61,33 +104,57 @@ const updateUserById = async (req, res) => {
     }
 
     const user = await User.findByIdAndUpdate(
-      req.params.id,
+      userId,
       { emailid, password },
       { new: true } // Return the updated document
     );
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
     }
 
-    res.status(200).json({ message: "User updated successfully", user });
+    res.json({
+      success: true,
+      message: "User updated successfully",
+      data: user, // Returning the updated user object as the data
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
 // Delete a user by ID
 const deleteUserById = async (req, res) => {
   try {
-    const user = await User.findByIdAndDelete(req.params.id);
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+    const userId = req.params.id;
+
+    // Validate ObjectId
+    if (!isValidObjectId(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID",
+      });
     }
-    res.status(200).json({ message: "User deleted successfully" });
+
+    const user = await User.findByIdAndDelete(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "User deleted successfully", // Message as part of data
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
