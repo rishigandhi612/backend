@@ -1,6 +1,8 @@
 const CustomerProduct = require("../models/cust-prod.models");
 const Product = require("../models/product.models");
 const Customer = require("../models/customer.models");
+const Counter = require("../models/counter.models");
+
 
 // getAllCustomerProducts function
 // getAllCustomerProducts function
@@ -51,7 +53,6 @@ const getCustomerProductsbyId = async (req, res, next) => {
     });
   }
 };
-
 
 const createCustomerProducts = async (req, res, next) => {
   const { customer, products, otherCharges, cgst, sgst, grandTotal } = req.body;
@@ -135,15 +136,24 @@ const createCustomerProducts = async (req, res, next) => {
       await Product.findByIdAndUpdate(product._id, { quantity: newQuantity });
     }
 
-    // Calculate grand total without affecting CGST and SGST
+    // Calculate total amount with other charges
     const totalWithOtherCharges = calculatedTotalAmount + (parseFloat(otherCharges) || 0);
 
     // Use CGST and SGST values directly from the request body
     const cgstAmount = parseFloat(cgst) || 0;
     const sgstAmount = parseFloat(sgst) || 0;
 
+    // Generate unique invoice number using the counter
+    let counter = await Counter.findOneAndUpdate(
+      { name: "invoiceNumber" },
+      { $inc: { value: 1 } },
+      { new: true, upsert: true }
+    );
+    const invoiceNumber = `INV-${new Date().getFullYear()}-${counter.value.toString().padStart(4, "655")}`;
+
     // Create the invoice
     let createdInvoice = await CustomerProduct.create({
+      invoiceNumber, // Add the generated invoice number
       customer: customer._id,
       products: invoiceProducts,
       otherCharges: parseFloat(otherCharges) || 0,
@@ -165,6 +175,7 @@ const createCustomerProducts = async (req, res, next) => {
     });
   }
 };
+
 
 const updateCustomerProducts = async (req, res, next) => {
   console.log(req.body);

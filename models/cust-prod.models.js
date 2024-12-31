@@ -2,6 +2,11 @@ const mongoose = require("mongoose");
 
 const InvoiceSchema = new mongoose.Schema(
   {
+    invoiceNumber: {
+      type: String, // Use String for flexibility in formatting the invoice number
+      required: true,
+      unique: true, // Ensure uniqueness for invoice numbers
+    },
     customer: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "customers",
