@@ -91,7 +91,7 @@ const createCustomerProducts = async (req, res, next) => {
     let calculatedTotalAmount = 0;
 
     for (const productData of products) {
-      const { product, width, quantity, unitPrice, totalPrice } = productData;
+      const { product, width, quantity, unit_price, totalPrice } = productData;
 
       if (isNaN(quantity) || parseInt(quantity) <= 0) {
         return res.status(400).json({
@@ -124,7 +124,7 @@ const createCustomerProducts = async (req, res, next) => {
         quantity,
         desc: ProductInfo.desc,
         price: ProductInfo.price,
-        unit_price: parseFloat(unitPrice),
+        unit_price: parseFloat(unit_price),
         total_price: parseFloat(totalPrice),
       });
 
@@ -197,7 +197,7 @@ const updateCustomerProducts = async (req, res, next) => {
 
     if (updatedData.products && Array.isArray(updatedData.products)) {
       for (const productData of updatedData.products) {
-        const { product, width, quantity, unitPrice, totalPrice } = productData;
+        const { product, width, quantity, unit_price, totalPrice } = productData;
 
         // Validate product fields
         if (width && isNaN(width)) {
@@ -212,10 +212,10 @@ const updateCustomerProducts = async (req, res, next) => {
             message: "Quantity must be a positive number for each product",
           });
         }
-        if (isNaN(unitPrice) || parseFloat(unitPrice) <= 0) {
+        if (isNaN(unit_price)) {
           return res.status(400).json({
             success: false,
-            message: "Unit price must be a positive number for each product",
+            message: "Unit price must be a number for each product",
           });
         }
         if (isNaN(totalPrice) || parseFloat(totalPrice) <= 0) {
@@ -230,7 +230,7 @@ const updateCustomerProducts = async (req, res, next) => {
           product,
           width,
           quantity,
-          unitPrice: parseFloat(unitPrice),
+          unit_price: parseFloat(unit_price),
           totalPrice: parseFloat(totalPrice),
         });
 
