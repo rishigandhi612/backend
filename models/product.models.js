@@ -3,12 +3,12 @@ const mongoose = require("mongoose");
 const productschema = new mongoose.Schema({
   name: {
     type: String,
-    required: true
+    required: true,
+    unique: true
   },
   hsn_code: {
     type: Number,
     required: true,
-    unique: true
   },
   quantity: {
     type: Number,
