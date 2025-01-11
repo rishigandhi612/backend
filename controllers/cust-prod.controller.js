@@ -3,7 +3,6 @@ const Product = require("../models/product.models");
 const Customer = require("../models/customer.models");
 const Counter = require("../models/counter.models");
 
-
 // getAllCustomerProducts function
 // getAllCustomerProducts function
 const getAllCustomerProducts = async (req, res, next) => {
@@ -24,24 +23,23 @@ const getAllCustomerProducts = async (req, res, next) => {
   }
 };
 
-
 // getCustomerProductsbyId function
 const getCustomerProductsbyId = async (req, res, next) => {
   const id = req.params.id;
   try {
     // Fetch a single customer product (invoice) and populate customer and product details
     let response = await CustomerProduct.findById(id)
-      .populate('customer') // Populate customer details
-      .populate('products.product') // Populate the product details for each product in the products array
+      .populate("customer") // Populate customer details
+      .populate("products.product") // Populate the product details for each product in the products array
       .exec();
-    
+
     if (!response) {
       return res.status(404).json({
         success: false,
         message: "CustomerProduct not found",
       });
     }
-    
+
     res.json({
       success: true,
       data: response,
@@ -137,7 +135,8 @@ const createCustomerProducts = async (req, res, next) => {
     }
 
     // Calculate total amount with other charges
-    const totalWithOtherCharges = calculatedTotalAmount + (parseFloat(otherCharges) || 0);
+    const totalWithOtherCharges =
+      calculatedTotalAmount + (parseFloat(otherCharges) || 0);
 
     // Use CGST and SGST values directly from the request body
     const cgstAmount = parseFloat(cgst) || 0;
@@ -149,7 +148,11 @@ const createCustomerProducts = async (req, res, next) => {
       { $inc: { value: 1 } },
       { new: true, upsert: true }
     );
-    const invoiceNumber = `HT/${counter.value.toString().padStart(4, "0")}/${lastYear}-${currentYear.toString().slice(-2)}`;
+    const currentYear = new Date().getFullYear();
+    const lastYear = currentYear - 1;
+    const invoiceNumber = `HT/${counter.value
+      .toString()
+      .padStart(4, "0")}/${lastYear}-${currentYear.toString().slice(-2)}`;
 
     // Create the invoice
     let createdInvoice = await CustomerProduct.create({
@@ -176,7 +179,6 @@ const createCustomerProducts = async (req, res, next) => {
   }
 };
 
-
 const updateCustomerProducts = async (req, res, next) => {
   console.log(req.body);
   const updatedData = req.body;
@@ -197,7 +199,8 @@ const updateCustomerProducts = async (req, res, next) => {
 
     if (updatedData.products && Array.isArray(updatedData.products)) {
       for (const productData of updatedData.products) {
-        const { product, width, quantity, unit_price, totalPrice } = productData;
+        const { product, width, quantity, unit_price, totalPrice } =
+          productData;
 
         // Validate product fields
         if (width && isNaN(width)) {
@@ -246,7 +249,9 @@ const updateCustomerProducts = async (req, res, next) => {
 
     // Calculate grand total
     const totalWithOtherCharges = totalAmount + otherCharges;
-    const grandTotal = Math.round(totalWithOtherCharges + cgstAmount + sgstAmount);
+    const grandTotal = Math.round(
+      totalWithOtherCharges + cgstAmount + sgstAmount
+    );
 
     // Prepare updated invoice data
     const newInvoiceData = {
@@ -259,7 +264,11 @@ const updateCustomerProducts = async (req, res, next) => {
     };
 
     // Update the invoice in the database
-    let response = await CustomerProduct.findByIdAndUpdate(pid, newInvoiceData, { new: true });
+    let response = await CustomerProduct.findByIdAndUpdate(
+      pid,
+      newInvoiceData,
+      { new: true }
+    );
 
     if (!response) {
       return res.status(404).json({
@@ -285,7 +294,8 @@ const deleteCustomerProducts = async (req, res, next) => {
 
   try {
     // Check if the ID is valid
-    if (!pid || pid.length !== 24) { // MongoDB ObjectId is 24 characters long
+    if (!pid || pid.length !== 24) {
+      // MongoDB ObjectId is 24 characters long
       return res.status(400).json({
         success: false,
         message: "Invalid or missing CustomerProduct ID",
@@ -324,7 +334,6 @@ const deleteCustomerProducts = async (req, res, next) => {
     });
   }
 };
-
 
 // Export functions
 module.exports = {
