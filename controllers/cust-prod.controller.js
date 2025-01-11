@@ -145,7 +145,7 @@ const createCustomerProducts = async (req, res, next) => {
     // Generate unique invoice number using the counter
     let counter = await Counter.findOneAndUpdate(
       { name: "invoiceNumber" },
-      { $inc: { value: 1 } },
+      { $inc: { value: 645 } },
       { new: true, upsert: true }
     );
     const currentYear = new Date().getFullYear();
