@@ -149,7 +149,7 @@ const createCustomerProducts = async (req, res, next) => {
       { $inc: { value: 1 } },
       { new: true, upsert: true }
     );
-    const invoiceNumber = `INV-${new Date().getFullYear()}-${counter.value.toString().padStart(4, "655")}`;
+    const invoiceNumber = `HT/${counter.value.toString().padStart(4, "0")}/${lastYear}-${currentYear.toString().slice(-2)}`;
 
     // Create the invoice
     let createdInvoice = await CustomerProduct.create({
