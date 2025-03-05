@@ -143,16 +143,27 @@ const createCustomerProducts = async (req, res, next) => {
     const sgstAmount = parseFloat(sgst) || 0;
 
     // Generate unique invoice number using the counter
-    let counter = await Counter.findOneAndUpdate(
-      { name: "invoiceNumber" },
-      { $inc: { value: 645 } },
-      { new: true, upsert: true }
-    );
-    const currentYear = new Date().getFullYear();
-    const lastYear = currentYear - 1;
-    const invoiceNumber = `HT/${counter.value
-      .toString()
-      .padStart(4, "0")}/${lastYear}-${currentYear.toString().slice(-2)}`;
+   // In the createCustomerProducts function, replace the existing counter logic with:
+let counter = await Counter.findOneAndUpdate(
+  { name: "invoiceNumber" },
+  { $inc: { value: 1 } }, // Increment by 1 instead of 645
+  { new: true, upsert: true, setDefaultsOnInsert: true }
+);
+
+// If the counter doesn't exist, set the initial value to 787
+if (counter.value === 1) {
+  counter = await Counter.findOneAndUpdate(
+    { name: "invoiceNumber" },
+    { value: 787 },
+    { new: true }
+  );
+}
+
+const currentYear = new Date().getFullYear();
+const lastYear = currentYear - 1;
+const invoiceNumber = `HT/${counter.value
+  .toString()
+  .padStart(4, "0")}/${lastYear}-${currentYear.toString().slice(-2)}`;
 
     // Create the invoice
     let createdInvoice = await CustomerProduct.create({
