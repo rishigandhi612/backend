@@ -74,6 +74,10 @@ app.use('/auth', loginRoutes);
 const dashboardRoutes = require('./routes/dashboard.routes');
 app.use('/dashboard', CheckAuth, dashboardRoutes);
 
+const emailRoutes = require("./routes/email.routes.js");
+app.use("/email", emailRoutes);
+
+
 // Connect to database
 connectDatabase();
 
