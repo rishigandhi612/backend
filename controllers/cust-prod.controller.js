@@ -348,6 +348,26 @@ const deleteCustomerProducts = async (req, res, next) => {
     });
   }
 };
+const resetCounter = async (req, res) => {
+    try {
+      const updatedCounter = await Counter.findOneAndUpdate(
+        { name: "invoiceNumber" },
+        { value: 807 },
+        { new: true, upsert: true }
+      );
+  
+      res.json({
+        success: true,
+        message: "Counter reset successfully",
+        data: updatedCounter,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  };
 
 // Export functions
 module.exports = {
@@ -356,4 +376,5 @@ module.exports = {
   createCustomerProducts,
   updateCustomerProducts,
   deleteCustomerProducts,
+  resetCounter
 };

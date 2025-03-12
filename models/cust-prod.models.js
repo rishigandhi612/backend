@@ -3,9 +3,9 @@ const mongoose = require("mongoose");
 const InvoiceSchema = new mongoose.Schema(
   {
     invoiceNumber: {
-      type: String, // Use String for flexibility in formatting the invoice number
+      type: String,
       required: true,
-      unique: true, // Ensure uniqueness for invoice numbers
+      unique: true, 
     },
     customer: {
       type: mongoose.Schema.Types.ObjectId,
@@ -66,7 +66,7 @@ const InvoiceSchema = new mongoose.Schema(
     },
   },
   {
-    timestamps: true, // Automatically include createdAt and updatedAt fields
+    timestamps: true,
   }
 );
 
