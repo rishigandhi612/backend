@@ -25,7 +25,6 @@ const InvoiceSchema = new mongoose.Schema(
         },
         width: {
           type: Number,
-          required: true,
         },
         quantity: {
           type: Number,
@@ -47,11 +46,15 @@ const InvoiceSchema = new mongoose.Schema(
     },
     cgst: {
       type: Number,
-      required: true,
+      default: 0,
     },
     sgst: {
       type: Number,
-      required: true,
+      default: 0,
+    },
+    igst: {
+      type: Number,
+      default: 0,
     },
     grandTotal: {
       type: Number,

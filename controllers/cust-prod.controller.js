@@ -53,7 +53,7 @@ const getCustomerProductsbyId = async (req, res, next) => {
 };
 
 const createCustomerProducts = async (req, res, next) => {
-  const { customer, products, otherCharges, cgst, sgst, grandTotal } = req.body;
+  const { customer, products, otherCharges, cgst, sgst, igst, grandTotal } = req.body;
 
   if (!customer || !customer._id) {
     return res.status(400).json({
@@ -138,41 +138,42 @@ const createCustomerProducts = async (req, res, next) => {
     const totalWithOtherCharges =
       calculatedTotalAmount + (parseFloat(otherCharges) || 0);
 
-    // Use CGST and SGST values directly from the request body
+    // Use tax values directly from the request body
     const cgstAmount = parseFloat(cgst) || 0;
     const sgstAmount = parseFloat(sgst) || 0;
+    const igstAmount = parseFloat(igst) || 0;
 
     // Generate unique invoice number using the counter
-   // In the createCustomerProducts function, replace the existing counter logic with:
-let counter = await Counter.findOneAndUpdate(
-  { name: "invoiceNumber" },
-  { $inc: { value: 1 } }, // Increment by 1 instead of 645
-  { new: true, upsert: true, setDefaultsOnInsert: true }
-);
+    let counter = await Counter.findOneAndUpdate(
+      { name: "invoiceNumber" },
+      { $inc: { value: 1 } },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
 
-// If the counter doesn't exist, set the initial value to 787
-if (counter.value === 1) {
-  counter = await Counter.findOneAndUpdate(
-    { name: "invoiceNumber" },
-    { value: 787 },
-    { new: true }
-  );
-}
+    // If the counter doesn't exist, set the initial value to 787
+    if (counter.value === 1) {
+      counter = await Counter.findOneAndUpdate(
+        { name: "invoiceNumber" },
+        { value: 787 },
+        { new: true }
+      );
+    }
 
-const currentYear = new Date().getFullYear();
-const lastYear = currentYear - 1;
-const invoiceNumber = `HT/${counter.value
-  .toString()
-  .padStart(4, "0")}/${lastYear}-${currentYear.toString().slice(-2)}`;
+    const currentYear = new Date().getFullYear();
+    const lastYear = currentYear - 1;
+    const invoiceNumber = `HT/${counter.value
+      .toString()
+      .padStart(4, "0")}/${lastYear}-${currentYear.toString().slice(-2)}`;
 
     // Create the invoice
     let createdInvoice = await CustomerProduct.create({
-      invoiceNumber, // Add the generated invoice number
+      invoiceNumber,
       customer: customer._id,
       products: invoiceProducts,
       otherCharges: parseFloat(otherCharges) || 0,
       cgst: cgstAmount,
       sgst: sgstAmount,
+      igst: igstAmount, // Add IGST to the invoice
       totalAmount: calculatedTotalAmount,
       grandTotal: parseFloat(grandTotal),
     });
@@ -253,15 +254,16 @@ const updateCustomerProducts = async (req, res, next) => {
       }
     }
 
-    // Directly use CGST and SGST values from the request body (no calculation)
+    // Use tax values directly from the request body
     const otherCharges = parseFloat(updatedData.otherCharges) || 0;
     const cgstAmount = parseFloat(updatedData.cgst) || 0;
     const sgstAmount = parseFloat(updatedData.sgst) || 0;
+    const igstAmount = parseFloat(updatedData.igst) || 0;
 
-    // Calculate grand total
+    // Calculate grand total including all applicable taxes
     const totalWithOtherCharges = totalAmount + otherCharges;
     const grandTotal = Math.round(
-      totalWithOtherCharges + cgstAmount + sgstAmount
+      totalWithOtherCharges + cgstAmount + sgstAmount + igstAmount
     );
 
     // Prepare updated invoice data
@@ -270,8 +272,9 @@ const updateCustomerProducts = async (req, res, next) => {
       products: updatedProducts.length > 0 ? updatedProducts : undefined,
       totalAmount,
       grandTotal,
-      cgst: cgstAmount, // Keep CGST from the request body as is
-      sgst: sgstAmount, // Keep SGST from the request body as is
+      cgst: cgstAmount,
+      sgst: sgstAmount,
+      igst: igstAmount // Add IGST to the updated invoice
     };
 
     // Update the invoice in the database
