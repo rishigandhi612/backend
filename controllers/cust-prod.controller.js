@@ -178,7 +178,7 @@ if (currentDate.getMonth() < 3) { // January (0) to March (2)
 const formattedYear = `${financialYearStart.toString().slice(-2)}-${financialYearEnd.toString().slice(-2)}`;
   
 // Create invoice number in format HT/0001/25-26
-const invoiceNumber = `HT/${counter.value.toString().padStart(4, '0')}/${formattedYear}`;
+const invoiceNumber = `HT/${counter.value.toString().padStart(4, '0')}/20${formattedYear}`;
 
 // Create the invoice
     let createdInvoice = await CustomerProduct.create({
@@ -367,7 +367,7 @@ const resetCounter = async (req, res) => {
     try {
       const updatedCounter = await Counter.findOneAndUpdate(
         { name: "invoiceNumber" },
-        { value: 0 },
+        { value: 5 },
         { new: true, upsert: true }
       );
   
