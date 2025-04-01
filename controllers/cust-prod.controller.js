@@ -154,7 +154,7 @@ const createCustomerProducts = async (req, res, next) => {
     if (counter.value === 1) {
       counter = await Counter.findOneAndUpdate(
         { name: "invoiceNumber" },
-        { value: 787 },
+        { value: 0001 },
         { new: true }
       );
     }
