@@ -352,7 +352,7 @@ const resetCounter = async (req, res) => {
     try {
       const updatedCounter = await Counter.findOneAndUpdate(
         { name: "invoiceNumber" },
-        { value: 807 },
+        { value: 0 },
         { new: true, upsert: true }
       );
   
