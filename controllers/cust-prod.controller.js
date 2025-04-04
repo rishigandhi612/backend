@@ -146,7 +146,7 @@ const createCustomerProducts = async (req, res, next) => {
     // Generate unique invoice number using the counter
     let counter = await Counter.findOneAndUpdate(
       { name: "invoiceNumber" },
-      { $inc: { value: 3 } },
+      { $inc: { value: 1 } },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
 
