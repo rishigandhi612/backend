@@ -4,18 +4,80 @@ const Customer = require("../models/customer.models");
 const Counter = require("../models/counter.models");
 
 // getAllCustomerProducts function
-// getAllCustomerProducts function
 const getAllCustomerProducts = async (req, res, next) => {
   try {
-    let response = await CustomerProduct.find()
-      .populate("customer") // Populate customer details
-      .populate("products.product") // Populate product details inside the products array
+    // Extract pagination and sorting parameters from query
+    const page = parseInt(req.query.page) || 1;
+    const itemsPerPage = parseInt(req.query.itemsPerPage) || 10;
+    const sortBy = req.query.sortBy || 'createdAt';
+    const sortDesc = req.query.sortDesc === 'true';
+    const search = req.query.search || '';
+    
+    // Calculate skip value for pagination
+    const skip = (page - 1) * itemsPerPage;
+    
+    // Prepare sort object for MongoDB
+    const sort = {};
+    sort[sortBy] = sortDesc ? -1 : 1;
+    
+    // Log the search term for debugging
+    // console.log("Search term:", search);
+    
+    // Prepare search filter if search term exists
+    let filter = {};
+    if (search && search.trim() !== '') {
+      // Create a regex pattern for the search term
+      const searchPattern = new RegExp(search.trim(), 'i');
+      
+      // First, find all customers matching the search pattern
+      const matchingCustomers = await Customer.find({
+        $or: [
+          { name: searchPattern },
+          { email: searchPattern },
+          { phone: searchPattern }
+        ]
+      }).select('_id');
+      
+      const customerIds = matchingCustomers.map(customer => customer._id);
+      
+      // Then create a filter that searches both invoice numbers and customer IDs
+      filter = {
+        $or: [
+          { invoiceNumber: searchPattern },
+          { customer: { $in: customerIds } }
+        ]
+      };
+      
+      // console.log("Applied filter:", JSON.stringify(filter));
+    }
+    
+    // Get total count for pagination
+    const totalItems = await CustomerProduct.countDocuments(filter);
+    // console.log("Total matching items:", totalItems);
+    
+    // Fetch paginated and sorted data
+    let response = await CustomerProduct.find(filter)
+      .populate("customer")
+      .populate("products.product")
+      .sort(sort)
+      .skip(skip)
+      .limit(itemsPerPage)
       .exec();
+    
+    // console.log(`Found ${response.length} invoices for page ${page}`);
+    
     res.json({
       success: true,
       data: response,
+      pagination: {
+        page,
+        itemsPerPage,
+        totalItems,
+        totalPages: Math.ceil(totalItems / itemsPerPage)
+      }
     });
   } catch (error) {
+    console.error("Error in getAllCustomerProducts:", error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -192,7 +254,7 @@ const createCustomerProducts = async (req, res, next) => {
 };
 
 const updateCustomerProducts = async (req, res, next) => {
-  console.log(req.body);
+  // console.log(req.body);
   const updatedData = req.body;
   const pid = req.params.id;
 
