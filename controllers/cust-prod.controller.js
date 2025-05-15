@@ -216,18 +216,33 @@ const createCustomerProducts = async (req, res, next) => {
     if (counter.value === 1) {
       counter = await Counter.findOneAndUpdate(
         { name: "invoiceNumber" },
-        { value: 787 },
+        { value: 1 },
         { new: true }
       );
     }
+// Get current date
+const currentDate = new Date();
+  
+// Determine financial year
+let financialYearStart, financialYearEnd;
+  
+// If current month is January through March (0-2), we're in the previous financial year
+// Otherwise (April through December, 3-11), we're in the current financial year
+if (currentDate.getMonth() < 3) { // January (0) to March (2)
+  financialYearStart = currentDate.getFullYear() - 1;
+  financialYearEnd = currentDate.getFullYear();
+} else { // April (3) to December (11)
+  financialYearStart = currentDate.getFullYear();
+  financialYearEnd = currentDate.getFullYear() + 1;
+}
+  
+// Format to get YY-YY format
+const formattedYear = `${financialYearStart.toString().slice(-2)}-${financialYearEnd.toString().slice(-2)}`;
+  
+// Create invoice number in format HT/0001/25-26
+const invoiceNumber = `HT/${counter.value.toString().padStart(4, '0')}/20${formattedYear}`;
 
-    const currentYear = new Date().getFullYear();
-    const lastYear = currentYear - 1;
-    const invoiceNumber = `HT/${counter.value
-      .toString()
-      .padStart(4, "0")}/${lastYear}-${currentYear.toString().slice(-2)}`;
-
-    // Create the invoice
+// Create the invoice
     let createdInvoice = await CustomerProduct.create({
       invoiceNumber,
       customer: customer._id,
@@ -414,7 +429,7 @@ const resetCounter = async (req, res) => {
     try {
       const updatedCounter = await Counter.findOneAndUpdate(
         { name: "invoiceNumber" },
-        { value: 807 },
+        { value: 5 },
         { new: true, upsert: true }
       );
   
