@@ -1,3 +1,4 @@
+//index.js
 require('dotenv').config(); // Load environment variables from .env file
 const express = require("express");
 const app = express();
@@ -80,8 +81,24 @@ app.use("/email", emailRoutes);
 const counterRoutes = require("./routes/resetcounter.routes.js");
 app.use("/reset", counterRoutes);
 
-// Connect to database
+// New inventory routes using PostgreSQL/Supabase
+const inventoryRoutes = require('./routes/inventory.routes');
+app.use('/inventory', CheckAuth, inventoryRoutes);
+
+// Connect to MongoDB database
 connectDatabase();
+
+// Initialize Prisma in a self-invoking async function
+(async () => {
+  try {
+    const prisma = require('./config/prisma');
+    // Test connection
+    await prisma.$connect();
+    console.log('Connected to PostgreSQL database through Prisma');
+  } catch (error) {
+    console.error('Failed to connect to PostgreSQL database:', error);
+  }
+})();
 
 // Start the server with dynamic port from the .env file
 const port = process.env.PORT || 3001; // Default to 3001 if not defined in .env
