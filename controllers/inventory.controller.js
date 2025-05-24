@@ -82,9 +82,19 @@ const getInventoryById = async (req, res) => {
 };
 
 // Create inventory
+const generateRollId = (netWeight, width) => {
+  const now = new Date();
+  const year = now.getFullYear().toString().slice(-2); // Last 2 digits of year
+  const widthDigit = width % 10; // Mod 10 of width
+  const dayDigit = now.getDate() % 10; // Mod 10 of day
+  const randomDigits = Math.floor(1000 + Math.random() * 9000); // 4-digit random
+
+  return `${year}${widthDigit}${dayDigit}${randomDigits}`;
+};
+
 const createInventory = async (req, res) => {
   const inventoryData = req.body;
-  
+
   // Validate inventory data
   const validationErrors = validateInventoryData(inventoryData);
   if (validationErrors.length > 0) {
@@ -93,7 +103,7 @@ const createInventory = async (req, res) => {
       errors: validationErrors
     });
   }
-  
+
   // Validate that the product exists in MongoDB
   if (!isValidObjectId(inventoryData.productId)) {
     return res.status(400).json({
@@ -101,7 +111,7 @@ const createInventory = async (req, res) => {
       message: 'Invalid product ID format'
     });
   }
-  
+
   try {
     // Check if product exists in MongoDB
     const productExists = await Product.findById(inventoryData.productId);
@@ -111,12 +121,17 @@ const createInventory = async (req, res) => {
         message: 'Product not found in the database'
       });
     }
-    
+
+    // Generate rollId if not provided
+    if (!inventoryData.rollId) {
+      inventoryData.rollId = generateRollId(inventoryData.netWeight, inventoryData.width || 0);
+    }
+
     // Create inventory in PostgreSQL
     const newInventory = await prisma.inventory.create({
       data: inventoryData
     });
-    
+
     res.status(201).json({
       success: true,
       data: newInventory
@@ -128,6 +143,7 @@ const createInventory = async (req, res) => {
     });
   }
 };
+
 
 // Update inventory
 const updateInventory = async (req, res) => {
