@@ -82,19 +82,23 @@ const getInventoryById = async (req, res) => {
 
 // Create inventory
 const generateSequentialRollId = async (netWeight, width) => {
-  const now = new Date();
-  const year = now.getFullYear().toString().slice(-2); // "25"
-  const widthDigit = width % 10; // e.g. 0
-  const dayDigit = now.getDate() % 10; // e.g. 4
+  // Determine prefix based on width (I for < 70, M for >= 70)
+  const widthPrefix = width < 70 ? 'I' : 'M';
+  
+  // Format width to 4 digits (remove decimal point and pad/truncate)
+  const widthStr = Math.round(width * 100).toString().padStart(4, '0').slice(0, 4);
+  
+  // Format net weight to 4 digits (remove decimal point and pad/truncate)
+  const weightStr = Math.round(netWeight * 100).toString().padStart(4, '0').slice(0, 4);
+  
+  // Create the base pattern (without sequence number)
+  const basePattern = `${widthPrefix}${widthStr}${weightStr}`;
 
-  // Prefix based on date and width
-  const prefix = `${year}${widthDigit}${dayDigit}`; // e.g. "2504"
-
-  // Find the max existing rollId with this prefix
+  // Find the latest inventory with this base pattern
   const latestInventory = await prisma.inventory.findFirst({
     where: {
       rollId: {
-        startsWith: prefix,
+        startsWith: basePattern,
       },
     },
     orderBy: {
@@ -103,15 +107,17 @@ const generateSequentialRollId = async (netWeight, width) => {
   });
 
   let sequence = 1;
-  if (latestInventory && latestInventory.rollId.length === 8) {
-    const lastSeq = parseInt(latestInventory.rollId.slice(-4));
+  if (latestInventory && latestInventory.rollId.length === basePattern.length + 2) {
+    const lastSeq = parseInt(latestInventory.rollId.slice(-2));
     if (!isNaN(lastSeq)) {
       sequence = lastSeq + 1;
     }
   }
 
-  const sequenceStr = sequence.toString().padStart(4, '0');
-  return `${prefix}${sequenceStr}`;
+  // Format sequence to 2 digits
+  const sequenceStr = sequence.toString().padStart(2, '0');
+  
+  return `${basePattern}${sequenceStr}`;
 };
 
 const createInventory = async (req, res) => {
@@ -149,7 +155,7 @@ const createInventory = async (req, res) => {
       );
     }
 
-    // Final uniqueness check before insert
+    // Final uniqueness check before insert - rollId is unique in schema
     const existing = await prisma.inventory.findUnique({
       where: { rollId: inventoryData.rollId },
     });
@@ -169,14 +175,20 @@ const createInventory = async (req, res) => {
       data: newInventory,
     });
   } catch (error) {
+    // Handle unique constraint violation if rollId has unique constraint at DB level
+    if (error.code === 'P2002' && error.meta?.target?.includes('rollId')) {
+      return res.status(409).json({
+        success: false,
+        message: 'Roll ID already exists. Please try again.',
+      });
+    }
+    
     res.status(500).json({
       success: false,
       error: error.message,
     });
   }
 };
-
-
 
 // Update inventory
 const updateInventory = async (req, res) => {
@@ -203,6 +215,19 @@ const updateInventory = async (req, res) => {
       }
     }
     
+    // If updating rollId, check for uniqueness
+    if (inventoryData.rollId) {
+      const existing = await prisma.inventory.findUnique({
+        where: { rollId: inventoryData.rollId },
+      });
+      if (existing && existing.id !== id) {
+        return res.status(409).json({
+          success: false,
+          message: 'Roll ID already exists.',
+        });
+      }
+    }
+    
     // Update inventory in PostgreSQL
     const updatedInventory = await prisma.inventory.update({
       where: { id },
@@ -219,6 +244,14 @@ const updateInventory = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Inventory item not found'
+      });
+    }
+    
+    // Handle unique constraint violation
+    if (error.code === 'P2002' && error.meta?.target?.includes('rollId')) {
+      return res.status(409).json({
+        success: false,
+        message: 'Roll ID already exists.',
       });
     }
     

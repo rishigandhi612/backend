@@ -17,6 +17,9 @@ CREATE TABLE "Inventory" (
 );
 
 -- CreateIndex
+CREATE UNIQUE INDEX "Inventory_rollId_key" ON "Inventory"("rollId");
+
+-- CreateIndex
 CREATE INDEX "Inventory_productId_idx" ON "Inventory"("productId");
 
 -- CreateIndex
