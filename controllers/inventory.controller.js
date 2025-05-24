@@ -15,7 +15,6 @@ const validateInventoryData = (data) => {
   // Required fields
   if (!data.productId) errors.push('Product ID is required');
   if (!data.netWeight && data.netWeight !== 0) errors.push('Net weight is required');
-  if (!data.rollId) errors.push('Roll ID is required');
   
   // Type validation
   if (data.type && !['film', 'non-film'].includes(data.type)) {
