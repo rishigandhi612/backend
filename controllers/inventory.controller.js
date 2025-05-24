@@ -82,67 +82,101 @@ const getInventoryById = async (req, res) => {
 };
 
 // Create inventory
-const generateRollId = (netWeight, width) => {
+const generateSequentialRollId = async (netWeight, width) => {
   const now = new Date();
-  const year = now.getFullYear().toString().slice(-2); // Last 2 digits of year
-  const widthDigit = width % 10; // Mod 10 of width
-  const dayDigit = now.getDate() % 10; // Mod 10 of day
-  const randomDigits = Math.floor(1000 + Math.random() * 9000); // 4-digit random
+  const year = now.getFullYear().toString().slice(-2); // "25"
+  const widthDigit = width % 10; // e.g. 0
+  const dayDigit = now.getDate() % 10; // e.g. 4
 
-  return `${year}${widthDigit}${dayDigit}${randomDigits}`;
+  // Prefix based on date and width
+  const prefix = `${year}${widthDigit}${dayDigit}`; // e.g. "2504"
+
+  // Find the max existing rollId with this prefix
+  const latestInventory = await prisma.inventory.findFirst({
+    where: {
+      rollId: {
+        startsWith: prefix,
+      },
+    },
+    orderBy: {
+      rollId: 'desc',
+    },
+  });
+
+  let sequence = 1;
+  if (latestInventory && latestInventory.rollId.length === 8) {
+    const lastSeq = parseInt(latestInventory.rollId.slice(-4));
+    if (!isNaN(lastSeq)) {
+      sequence = lastSeq + 1;
+    }
+  }
+
+  const sequenceStr = sequence.toString().padStart(4, '0');
+  return `${prefix}${sequenceStr}`;
 };
 
 const createInventory = async (req, res) => {
   const inventoryData = req.body;
 
-  // Validate inventory data
   const validationErrors = validateInventoryData(inventoryData);
   if (validationErrors.length > 0) {
     return res.status(400).json({
       success: false,
-      errors: validationErrors
+      errors: validationErrors,
     });
   }
 
-  // Validate that the product exists in MongoDB
   if (!isValidObjectId(inventoryData.productId)) {
     return res.status(400).json({
       success: false,
-      message: 'Invalid product ID format'
+      message: 'Invalid product ID format',
     });
   }
 
   try {
-    // Check if product exists in MongoDB
     const productExists = await Product.findById(inventoryData.productId);
     if (!productExists) {
       return res.status(404).json({
         success: false,
-        message: 'Product not found in the database'
+        message: 'Product not found in the database',
       });
     }
 
-    // Generate rollId if not provided
+    // Generate sequential and unique rollId
     if (!inventoryData.rollId) {
-      inventoryData.rollId = generateRollId(inventoryData.netWeight, inventoryData.width || 0);
+      inventoryData.rollId = await generateSequentialRollId(
+        inventoryData.netWeight,
+        inventoryData.width || 0
+      );
     }
 
-    // Create inventory in PostgreSQL
+    // Final uniqueness check before insert
+    const existing = await prisma.inventory.findUnique({
+      where: { rollId: inventoryData.rollId },
+    });
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        message: 'Generated rollId already exists. Please try again.',
+      });
+    }
+
     const newInventory = await prisma.inventory.create({
-      data: inventoryData
+      data: inventoryData,
     });
 
     res.status(201).json({
       success: true,
-      data: newInventory
+      data: newInventory,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
     });
   }
 };
+
 
 
 // Update inventory
