@@ -15,7 +15,7 @@ model Inventory {
   width       Float?
   netWeight   Float
   grossWeight Float?
-  rollId      String
+  rollId      String   @unique
   micron      Float?
   mtr         Float?
   type        String   @default("film")

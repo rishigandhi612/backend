@@ -3,7 +3,7 @@ generator client {
   output   = "./generated/client"
   binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
-s
+
 
 datasource db {
   provider = "postgresql"
@@ -14,9 +14,9 @@ model Inventory {
   id          String   @id @default(uuid())
   productId   String
   width       Float?
-  netWeight   Float
-  grossWeight Float?
-  rollId      String
+  netWeight   Float    
+  grossWeight Float?  
+  rollId      String  @unique
   micron      Float?
   mtr         Float?
   type        String   @default("film")

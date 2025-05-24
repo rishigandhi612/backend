@@ -17,7 +17,7 @@ model Inventory {
   width       Float?   // Optional width
   netWeight   Float    // Required net weight
   grossWeight Float?   // Optional gross weight
-  rollId      String   // Required roll ID
+  rollId      String   @unique // Required roll ID
   micron      Float?   // Optional micron
   mtr         Float?   // Optional meter
   type        String   @default("film") // Options: "film" or "non-film"
