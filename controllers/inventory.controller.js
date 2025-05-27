@@ -22,8 +22,8 @@ const validateInventoryData = (data) => {
   }
   
   // Status validation
-  if (data.status && !['damaged', 'available', 'reserved'].includes(data.status)) {
-    errors.push('Status must be one of: damaged, available, reserved');
+  if (data.status && !['damaged', 'available', 'reserved', 'sold'].includes(data.status)) {
+    errors.push('Status must be one of: damaged, available, reserved, sold');
   }
   
   // Numeric fields validation
@@ -323,10 +323,10 @@ const getInventoryByProductId = async (req, res) => {
 const getInventoryByStatus = async (req, res) => {
   const { status } = req.params;
   
-  if (!['damaged', 'available', 'reserved'].includes(status)) {
+  if (!['damaged', 'available', 'reserved', 'sold'].includes(status)) {
     return res.status(400).json({
       success: false,
-      message: 'Invalid status. Must be one of: damaged, available, reserved'
+      message: 'Invalid status. Must be one of: damaged, available, reserved , sold'
     });
   }
   

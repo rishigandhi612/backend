@@ -5,7 +5,7 @@ const InvoiceSchema = new mongoose.Schema(
     invoiceNumber: {
       type: String,
       required: true,
-      unique: true, 
+      unique: true,
     },
     customer: {
       type: mongoose.Schema.Types.ObjectId,
@@ -14,6 +14,7 @@ const InvoiceSchema = new mongoose.Schema(
     },
     products: [
       {
+        rollId: { type: String, unique: true, required: true },
         product: {
           type: mongoose.Schema.Types.ObjectId,
           ref: "products",
@@ -26,9 +27,29 @@ const InvoiceSchema = new mongoose.Schema(
         width: {
           type: Number,
         },
+        netWeight: {
+          type: Number,
+        },
+        grossWeight: {
+          type: Number,
+        },
         quantity: {
           type: Number,
           required: true,
+        },
+        micron: {
+          type: Number,
+        },
+        mtr: {
+          type: Number,
+        },
+        type: {
+          type: String,
+        },
+        status: {
+          type: String,
+          enum: ["available", "sold", "damaged", "reserved"],
+          default: "available",
         },
         unit_price: {
           type: Number,
