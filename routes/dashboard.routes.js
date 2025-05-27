@@ -17,14 +17,24 @@ router.get('/stats', async (req, res) => {
             User.countDocuments(),
             prisma.inventory.count(), // Prisma query for PostgreSQL
         ]);
+        const [availableInventory, damagedInventory, reservedInventory] = await Promise.all([
+    prisma.inventory.count({ where: { status: 'available' } }),
+    prisma.inventory.count({ where: { status: 'damaged' } }),
+    prisma.inventory.count({ where: { status: 'reserved' } }),
+]);
 
-        res.json({
-            totalCustomers: customerCount,
-            totalProducts: productCount,
-            totalCustProd: custProdCount,
-            totalUsers: userCount,
-            totalInventory: inventoryCount,
-        });
+
+       res.json({
+    totalCustomers: customerCount,
+    totalProducts: productCount,
+    totalCustProd: custProdCount,
+    totalUsers: userCount,
+    totalInventory: inventoryCount,
+    availableInventory,
+    damagedInventory,
+    reservedInventory,
+});
+
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Error fetching dashboard stats' });
