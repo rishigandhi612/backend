@@ -39,15 +39,107 @@ const validateInventoryData = (data) => {
 // Get all inventory items
 const getAllInventory = async (req, res) => {
   try {
-    const inventory = await prisma.inventory.findMany();
+    // Parse query parameters with defaults
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const sortBy = req.query.sortBy || 'createdAt';
+    const sortOrder = req.query.sortOrder || 'desc';
+    const search = req.query.search;
+    const status = req.query.status;
+    const type = req.query.type;
+
+    // Calculate skip for pagination
+    const skip = (page - 1) * limit;
+
+    // Build where clause for filtering
+    const whereClause = {};
+    
+    if (search) {
+      whereClause.OR = [
+        { rollId: { contains: search, mode: 'insensitive' } },
+        { productId: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+    
+    if (status) {
+      whereClause.status = status;
+    }
+    
+    if (type) {
+      whereClause.type = type;
+    }
+
+    // Build orderBy clause
+    const sortFieldMap = {
+      'rollId': 'rollId',
+      'productId': 'productId',
+      'status': 'status',
+      'type': 'type',
+      'netWeight': 'netWeight',
+      'width': 'width',
+      'createdAt': 'createdAt',
+      'updatedAt': 'updatedAt'
+    };
+    
+    const dbSortField = sortFieldMap[sortBy] || 'createdAt';
+    const orderBy = {};
+    orderBy[dbSortField] = sortOrder === 'desc' ? 'desc' : 'asc';
+
+    // Use findManyAndCount pattern or separate queries with delay
+    let inventory, total;
+    
+    try {
+      // First get the data
+      inventory = await prisma.inventory.findMany({
+        where: whereClause,
+        skip,
+        take: limit,
+        orderBy,
+      });
+
+      // Small delay to avoid prepared statement conflict
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Then get the count
+      total = await prisma.inventory.count({
+        where: whereClause,
+      });
+
+    } catch (queryError) {
+      console.error('Query execution error:', queryError);
+      
+      // Fallback: try without pagination first
+      inventory = await prisma.inventory.findMany({
+        where: whereClause,
+        orderBy,
+      });
+      
+      total = inventory.length;
+      
+      // Apply manual pagination
+      inventory = inventory.slice(skip, skip + limit);
+    }
+
     res.json({
       success: true,
-      data: inventory
+      data: inventory,
+      total: total,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNextPage: page < Math.ceil(total / limit),
+        hasPrevPage: page > 1,
+      },
     });
   } catch (error) {
+    console.error('Pagination error:', error);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
+      data: [],
+      total: 0,
     });
   }
 };
