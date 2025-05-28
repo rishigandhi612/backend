@@ -37,6 +37,13 @@ const validateInventoryData = (data) => {
 };
 
 // Get all inventory items
+// Fixed getAllInventory function in controllers/inventory.controller.js
+
+// Helper function to check if a string is numeric
+const isNumeric = (str) => {
+  return !isNaN(str) && !isNaN(parseFloat(str)) && isFinite(str);
+};
+
 const getAllInventory = async (req, res) => {
   try {
     // Parse query parameters with defaults
@@ -54,22 +61,41 @@ const getAllInventory = async (req, res) => {
     // Build where clause for filtering
     const whereClause = {};
     
+    // Add comprehensive search filter
     if (search) {
+      const searchTerm = search.trim();
       whereClause.OR = [
-        { rollId: { contains: search, mode: 'insensitive' } },
-        { productId: { contains: search, mode: 'insensitive' } },
+        // Text fields - case insensitive search
+        { rollId: { contains: searchTerm, mode: 'insensitive' } },
+        { productId: { contains: searchTerm, mode: 'insensitive' } },
+        { status: { contains: searchTerm, mode: 'insensitive' } },
+        { type: { contains: searchTerm, mode: 'insensitive' } },
+        
+        // If search term is numeric, search in numeric fields too
+        ...(isNumeric(searchTerm) ? [
+          { netWeight: { equals: parseFloat(searchTerm) } },
+          { grossWeight: { equals: parseFloat(searchTerm) } },
+          { width: { equals: parseFloat(searchTerm) } },
+          { micron: { equals: parseFloat(searchTerm) } },
+          { mtr: { equals: parseFloat(searchTerm) } },
+        ] : []),
       ];
     }
     
+    // Add status filter
     if (status) {
       whereClause.status = status;
     }
     
+    // Add type filter
     if (type) {
       whereClause.type = type;
     }
 
     // Build orderBy clause
+    const orderBy = {};
+    
+    // Map frontend sortBy values to actual database fields
     const sortFieldMap = {
       'rollId': 'rollId',
       'productId': 'productId',
@@ -82,48 +108,25 @@ const getAllInventory = async (req, res) => {
     };
     
     const dbSortField = sortFieldMap[sortBy] || 'createdAt';
-    const orderBy = {};
     orderBy[dbSortField] = sortOrder === 'desc' ? 'desc' : 'asc';
 
-    // Use findManyAndCount pattern or separate queries with delay
-    let inventory, total;
-    
-    try {
-      // First get the data
-      inventory = await prisma.inventory.findMany({
-        where: whereClause,
-        skip,
-        take: limit,
-        orderBy,
-      });
+    // Execute queries sequentially to avoid prepared statement conflicts
+    const inventory = await prisma.inventory.findMany({
+      where: whereClause,
+      skip,
+      take: limit,
+      orderBy,
+    });
 
-      // Small delay to avoid prepared statement conflict
-      await new Promise(resolve => setTimeout(resolve, 10));
+    const total = await prisma.inventory.count({
+      where: whereClause,
+    });
 
-      // Then get the count
-      total = await prisma.inventory.count({
-        where: whereClause,
-      });
-
-    } catch (queryError) {
-      console.error('Query execution error:', queryError);
-      
-      // Fallback: try without pagination first
-      inventory = await prisma.inventory.findMany({
-        where: whereClause,
-        orderBy,
-      });
-      
-      total = inventory.length;
-      
-      // Apply manual pagination
-      inventory = inventory.slice(skip, skip + limit);
-    }
-
+    // Return response in the format expected by frontend
     res.json({
       success: true,
       data: inventory,
-      total: total,
+      total: total, // Frontend expects this at root level
       pagination: {
         total,
         page,
