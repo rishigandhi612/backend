@@ -9,6 +9,13 @@ const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 const registerUser = async (req, res) => {
   try {
     const { emailid, password } = req.body;
+    
+    // Debug the incoming password during registration
+    console.log('Registration password details:');
+    console.log('- Password:', password);
+    console.log('- Password length:', password.length);
+    console.log('- Password type:', typeof password);
+    console.log('- Password bytes:', Array.from(Buffer.from(password, 'utf8')));
 
     // Check if the user already exists
     let user = await User.findOne({ emailid });
@@ -20,8 +27,12 @@ const registerUser = async (req, res) => {
     }
 
     // Hash the password before saving
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const hashedPassword = await bcrypt.hash(password, 10);
+    console.log('Generated hash:', hashedPassword);
+    
+    // Test the hash immediately after creation
+    const immediateTest = await bcrypt.compare(password, hashedPassword);
+    console.log('Immediate hash test:', immediateTest); // Should be true
 
     // Create a new user
     user = new User({ emailid, password: hashedPassword });
@@ -30,7 +41,7 @@ const registerUser = async (req, res) => {
     res.json({
       success: true,
       message: "User registered successfully",
-      data: user, // Returning the created user as the data
+      data: user,
     });
   } catch (err) {
     console.error(err);
@@ -97,10 +108,9 @@ const updateUserById = async (req, res) => {
       });
     }
 
-    // Hash the password if it's provided
+    // Hash the password if it's provided - FIXED: Use single-step method
     if (password) {
-      const salt = await bcrypt.genSalt(10);
-      password = await bcrypt.hash(password, salt);
+      password = await bcrypt.hash(password, 10);
     }
 
     const user = await User.findByIdAndUpdate(
