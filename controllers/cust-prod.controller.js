@@ -2,6 +2,73 @@ const CustomerProduct = require("../models/cust-prod.models");
 const Product = require("../models/product.models");
 const Customer = require("../models/customer.models");
 const Counter = require("../models/counter.models");
+const prisma = require('../config/prisma'); // Add prisma for inventory operations
+
+// Helper function to validate roll IDs
+const validateRollIds = async (rollIds) => {
+  if (!rollIds || rollIds.length === 0) return { valid: true, errors: [] };
+  
+  const errors = [];
+  const validRollIds = [];
+  
+  for (const rollId of rollIds) {
+    try {
+      const inventoryItem = await prisma.inventory.findUnique({
+        where: { rollId: rollId.trim() }
+      });
+      
+      if (!inventoryItem) {
+        errors.push(`Roll ID ${rollId} not found in inventory`);
+      } else if (inventoryItem.status === 'sold') {
+        errors.push(`Roll ID ${rollId} is already sold`);
+      } else if (inventoryItem.status === 'damaged') {
+        errors.push(`Roll ID ${rollId} is marked as damaged and cannot be sold`);
+      } else {
+        validRollIds.push(rollId.trim());
+      }
+    } catch (error) {
+      errors.push(`Error validating Roll ID ${rollId}: ${error.message}`);
+    }
+  }
+  
+  return { valid: errors.length === 0, errors, validRollIds };
+};
+
+// Helper function to update inventory status
+const updateInventoryStatus = async (rollIds, status, invoiceNumber = null) => {
+  if (!rollIds || rollIds.length === 0) return;
+  
+  try {
+    const updateData = { 
+      status,
+      updatedAt: new Date()
+    };
+    
+    // Add invoice reference when marking as sold
+    if (status === 'sold' && invoiceNumber) {
+      updateData.invoiceNumber = invoiceNumber;
+      updateData.soldAt = new Date();
+    }
+    
+    // Remove invoice reference when marking as available
+    if (status === 'available') {
+      updateData.invoiceNumber = null;
+      updateData.soldAt = null;
+    }
+    
+    await prisma.inventory.updateMany({
+      where: {
+        rollId: { in: rollIds }
+      },
+      data: updateData
+    });
+    
+    console.log(`Updated ${rollIds.length} inventory items to status: ${status}`);
+  } catch (error) {
+    console.error('Error updating inventory status:', error);
+    throw error;
+  }
+};
 
 // getAllCustomerProducts function
 const getAllCustomerProducts = async (req, res, next) => {
@@ -20,9 +87,6 @@ const getAllCustomerProducts = async (req, res, next) => {
     const sort = {};
     sort[sortBy] = sortDesc ? -1 : 1;
     
-    // Log the search term for debugging
-    // console.log("Search term:", search);
-    
     // Prepare search filter if search term exists
     let filter = {};
     if (search && search.trim() !== '') {
@@ -40,20 +104,18 @@ const getAllCustomerProducts = async (req, res, next) => {
       
       const customerIds = matchingCustomers.map(customer => customer._id);
       
-      // Then create a filter that searches both invoice numbers and customer IDs
+      // Then create a filter that searches both invoice numbers, roll IDs, and customer IDs
       filter = {
         $or: [
           { invoiceNumber: searchPattern },
+          { rollIds: { $in: [searchPattern] } }, // Search in roll IDs array
           { customer: { $in: customerIds } }
         ]
       };
-      
-      // console.log("Applied filter:", JSON.stringify(filter));
     }
     
     // Get total count for pagination
     const totalItems = await CustomerProduct.countDocuments(filter);
-    // console.log("Total matching items:", totalItems);
     
     // Fetch paginated and sorted data
     let response = await CustomerProduct.find(filter)
@@ -63,8 +125,6 @@ const getAllCustomerProducts = async (req, res, next) => {
       .skip(skip)
       .limit(itemsPerPage)
       .exec();
-    
-    // console.log(`Found ${response.length} invoices for page ${page}`);
     
     res.json({
       success: true,
@@ -91,8 +151,8 @@ const getCustomerProductsbyId = async (req, res, next) => {
   try {
     // Fetch a single customer product (invoice) and populate customer and product details
     let response = await CustomerProduct.findById(id)
-      .populate("customer") // Populate customer details
-      .populate("products.product") // Populate the product details for each product in the products array
+      .populate("customer")
+      .populate("products.product")
       .exec();
 
     if (!response) {
@@ -100,6 +160,23 @@ const getCustomerProductsbyId = async (req, res, next) => {
         success: false,
         message: "CustomerProduct not found",
       });
+    }
+
+    // If invoice has roll IDs, get inventory details
+    if (response.rollIds && response.rollIds.length > 0) {
+      try {
+        const inventoryItems = await prisma.inventory.findMany({
+          where: {
+            rollId: { in: response.rollIds }
+          }
+        });
+        
+        response = response.toObject();
+        response.inventoryDetails = inventoryItems;
+      } catch (error) {
+        console.error('Error fetching inventory details:', error);
+        // Continue without inventory details
+      }
     }
 
     res.json({
@@ -115,7 +192,7 @@ const getCustomerProductsbyId = async (req, res, next) => {
 };
 
 const createCustomerProducts = async (req, res, next) => {
-  const { customer, products, otherCharges, cgst, sgst, igst, grandTotal } = req.body;
+  const { customer, products, otherCharges, cgst, sgst, igst, grandTotal, rollIds } = req.body;
 
   if (!customer || !customer._id) {
     return res.status(400).json({
@@ -136,6 +213,18 @@ const createCustomerProducts = async (req, res, next) => {
       success: false,
       message: "Grand Total must be a positive number",
     });
+  }
+
+  // Validate roll IDs if provided
+  if (rollIds && Array.isArray(rollIds) && rollIds.length > 0) {
+    const rollIdValidation = await validateRollIds(rollIds);
+    if (!rollIdValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        message: "Roll ID validation failed",
+        errors: rollIdValidation.errors
+      });
+    }
   }
 
   try {
@@ -197,8 +286,7 @@ const createCustomerProducts = async (req, res, next) => {
     }
 
     // Calculate total amount with other charges
-    const totalWithOtherCharges =
-      calculatedTotalAmount + (parseFloat(otherCharges) || 0);
+    const totalWithOtherCharges = calculatedTotalAmount + (parseFloat(otherCharges) || 0);
 
     // Use tax values directly from the request body
     const cgstAmount = parseFloat(cgst) || 0;
@@ -220,45 +308,64 @@ const createCustomerProducts = async (req, res, next) => {
         { new: true }
       );
     }
-// Get current date
-const currentDate = new Date();
-  
-// Determine financial year
-let financialYearStart, financialYearEnd;
-  
-// If current month is January through March (0-2), we're in the previous financial year
-// Otherwise (April through December, 3-11), we're in the current financial year
-if (currentDate.getMonth() < 3) { // January (0) to March (2)
-  financialYearStart = currentDate.getFullYear() - 1;
-  financialYearEnd = currentDate.getFullYear();
-} else { // April (3) to December (11)
-  financialYearStart = currentDate.getFullYear();
-  financialYearEnd = currentDate.getFullYear() + 1;
-}
-  
-// Format to get YY-YY format
-const formattedYear = `${financialYearStart.toString().slice(-2)}-${financialYearEnd.toString().slice(-2)}`;
-  
-// Create invoice number in format HT/0001/25-26
-const invoiceNumber = `HT/${counter.value.toString().padStart(4, '0')}/20${formattedYear}`;
 
-// Create the invoice
-    let createdInvoice = await CustomerProduct.create({
+    // Get current date and format financial year
+    const currentDate = new Date();
+    let financialYearStart, financialYearEnd;
+    
+    if (currentDate.getMonth() < 3) {
+      financialYearStart = currentDate.getFullYear() - 1;
+      financialYearEnd = currentDate.getFullYear();
+    } else {
+      financialYearStart = currentDate.getFullYear();
+      financialYearEnd = currentDate.getFullYear() + 1;
+    }
+    
+    const formattedYear = `${financialYearStart.toString().slice(-2)}-${financialYearEnd.toString().slice(-2)}`;
+    const invoiceNumber = `HT/${counter.value.toString().padStart(4, '0')}/20${formattedYear}`;
+
+    // Prepare invoice data
+    const invoiceData = {
       invoiceNumber,
       customer: customer._id,
       products: invoiceProducts,
       otherCharges: parseFloat(otherCharges) || 0,
       cgst: cgstAmount,
       sgst: sgstAmount,
-      igst: igstAmount, // Add IGST to the invoice
+      igst: igstAmount,
       totalAmount: calculatedTotalAmount,
       grandTotal: parseFloat(grandTotal),
-    });
+    };
+
+    // Add roll IDs if provided
+    if (rollIds && Array.isArray(rollIds) && rollIds.length > 0) {
+      const cleanRollIds = rollIds.map(id => id.trim()).filter(id => id.length > 0);
+      if (cleanRollIds.length > 0) {
+        invoiceData.rollIds = cleanRollIds;
+      }
+    }
+
+    // Create the invoice
+    let createdInvoice = await CustomerProduct.create(invoiceData);
+
+    // Update inventory status to 'sold' if roll IDs are provided
+    if (invoiceData.rollIds && invoiceData.rollIds.length > 0) {
+      try {
+        await updateInventoryStatus(invoiceData.rollIds, 'sold', invoiceNumber);
+      } catch (inventoryError) {
+        console.error('Error updating inventory status:', inventoryError);
+        // Consider whether to rollback the invoice creation or continue
+        // For now, we'll continue but log the error
+      }
+    }
 
     // Respond with the created invoice
     return res.status(201).json({
       success: true,
       data: createdInvoice,
+      message: invoiceData.rollIds ? 
+        `Invoice created and ${invoiceData.rollIds.length} inventory items marked as sold` : 
+        'Invoice created successfully'
     });
   } catch (error) {
     return res.status(500).json({
@@ -269,7 +376,6 @@ const invoiceNumber = `HT/${counter.value.toString().padStart(4, '0')}/20${forma
 };
 
 const updateCustomerProducts = async (req, res, next) => {
-  // console.log(req.body);
   const updatedData = req.body;
   const pid = req.params.id;
 
@@ -282,14 +388,34 @@ const updateCustomerProducts = async (req, res, next) => {
       });
     }
 
+    // Get the existing invoice to compare roll IDs
+    const existingInvoice = await CustomerProduct.findById(pid);
+    if (!existingInvoice) {
+      return res.status(404).json({
+        success: false,
+        message: "CustomerProduct not found",
+      });
+    }
+
+    // Validate new roll IDs if provided
+    if (updatedData.rollIds && Array.isArray(updatedData.rollIds) && updatedData.rollIds.length > 0) {
+      const rollIdValidation = await validateRollIds(updatedData.rollIds);
+      if (!rollIdValidation.valid) {
+        return res.status(400).json({
+          success: false,
+          message: "Roll ID validation failed",
+          errors: rollIdValidation.errors
+        });
+      }
+    }
+
     // Initialize totalAmount and updatedProducts
     let totalAmount = 0;
     const updatedProducts = [];
 
     if (updatedData.products && Array.isArray(updatedData.products)) {
       for (const productData of updatedData.products) {
-        const { product, width, quantity, unit_price, totalPrice } =
-          productData;
+        const { product, width, quantity, unit_price, totalPrice } = productData;
 
         // Validate product fields
         if (width && isNaN(width)) {
@@ -339,9 +465,7 @@ const updateCustomerProducts = async (req, res, next) => {
 
     // Calculate grand total including all applicable taxes
     const totalWithOtherCharges = totalAmount + otherCharges;
-    const grandTotal = Math.round(
-      totalWithOtherCharges + cgstAmount + sgstAmount + igstAmount
-    );
+    const grandTotal = Math.round(totalWithOtherCharges + cgstAmount + sgstAmount + igstAmount);
 
     // Prepare updated invoice data
     const newInvoiceData = {
@@ -351,15 +475,16 @@ const updateCustomerProducts = async (req, res, next) => {
       grandTotal,
       cgst: cgstAmount,
       sgst: sgstAmount,
-      igst: igstAmount // Add IGST to the updated invoice
+      igst: igstAmount
     };
 
+    // Handle roll ID changes
+    const oldRollIds = existingInvoice.rollIds || [];
+    const newRollIds = updatedData.rollIds ? 
+      updatedData.rollIds.map(id => id.trim()).filter(id => id.length > 0) : [];
+
     // Update the invoice in the database
-    let response = await CustomerProduct.findByIdAndUpdate(
-      pid,
-      newInvoiceData,
-      { new: true }
-    );
+    let response = await CustomerProduct.findByIdAndUpdate(pid, newInvoiceData, { new: true });
 
     if (!response) {
       return res.status(404).json({
@@ -368,9 +493,28 @@ const updateCustomerProducts = async (req, res, next) => {
       });
     }
 
+    // Update inventory status based on roll ID changes
+    try {
+      // Find roll IDs that were removed (mark as available)
+      const removedRollIds = oldRollIds.filter(id => !newRollIds.includes(id));
+      if (removedRollIds.length > 0) {
+        await updateInventoryStatus(removedRollIds, 'available');
+      }
+
+      // Find roll IDs that were added (mark as sold)
+      const addedRollIds = newRollIds.filter(id => !oldRollIds.includes(id));
+      if (addedRollIds.length > 0) {
+        await updateInventoryStatus(addedRollIds, 'sold', existingInvoice.invoiceNumber);
+      }
+    } catch (inventoryError) {
+      console.error('Error updating inventory status during update:', inventoryError);
+      // Continue with the response but log the error
+    }
+
     res.json({
       success: true,
       data: response,
+      message: 'Invoice updated successfully'
     });
   } catch (error) {
     res.status(500).json({
@@ -386,21 +530,23 @@ const deleteCustomerProducts = async (req, res, next) => {
   try {
     // Check if the ID is valid
     if (!pid || pid.length !== 24) {
-      // MongoDB ObjectId is 24 characters long
       return res.status(400).json({
         success: false,
         message: "Invalid or missing CustomerProduct ID",
       });
     }
 
-    // Check if the document exists
-    const product = await CustomerProduct.findById(pid);
-    if (!product) {
+    // Check if the document exists and get roll IDs
+    const invoice = await CustomerProduct.findById(pid);
+    if (!invoice) {
       return res.status(404).json({
         success: false,
         message: "CustomerProduct not found",
       });
     }
+
+    // Store roll IDs before deletion
+    const rollIds = invoice.rollIds || [];
 
     // Delete the document
     const response = await CustomerProduct.findByIdAndDelete(pid);
@@ -411,11 +557,21 @@ const deleteCustomerProducts = async (req, res, next) => {
       });
     }
 
+    // Update inventory status to 'available' for associated roll IDs
+    if (rollIds.length > 0) {
+      try {
+        await updateInventoryStatus(rollIds, 'available');
+      } catch (inventoryError) {
+        console.error('Error updating inventory status during deletion:', inventoryError);
+        // Continue with the response but log the error
+      }
+    }
+
     // Respond with success
     res.json({
       success: true,
       data: response,
-      message: `CustomerProduct with id ${pid} deleted successfully`,
+      message: `CustomerProduct with id ${pid} deleted successfully${rollIds.length > 0 ? ` and ${rollIds.length} inventory items marked as available` : ''}`,
     });
   } catch (error) {
     console.error("Error deleting CustomerProduct:", error.message);
@@ -425,26 +581,60 @@ const deleteCustomerProducts = async (req, res, next) => {
     });
   }
 };
+
 const resetCounter = async (req, res) => {
-    try {
-      const updatedCounter = await Counter.findOneAndUpdate(
-        { name: "invoiceNumber" },
-        { value: 5 },
-        { new: true, upsert: true }
-      );
+  try {
+    const updatedCounter = await Counter.findOneAndUpdate(
+      { name: "invoiceNumber" },
+      { value: 5 },
+      { new: true, upsert: true }
+    );
+
+    res.json({
+      success: true,
+      message: "Counter reset successfully",
+      data: updatedCounter,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+};
+
+// New function to get available roll IDs for a specific product
+const getAvailableRollIds = async (req, res) => {
+  const { productId } = req.params;
   
-      res.json({
-        success: true,
-        message: "Counter reset successfully",
-        data: updatedCounter,
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
-    }
-  };
+  try {
+    const availableInventory = await prisma.inventory.findMany({
+      where: {
+        productId: productId,
+        status: 'available'
+      },
+      select: {
+        rollId: true,
+        netWeight: true,
+        width: true,
+        micron: true
+      },
+      orderBy: {
+        rollId: 'asc'
+      }
+    });
+
+    res.json({
+      success: true,
+      data: availableInventory
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
 
 // Export functions
 module.exports = {
@@ -453,5 +643,6 @@ module.exports = {
   createCustomerProducts,
   updateCustomerProducts,
   deleteCustomerProducts,
-  resetCounter
+  resetCounter,
+  getAvailableRollIds
 };

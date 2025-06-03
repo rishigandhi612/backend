@@ -21,9 +21,9 @@ const validateInventoryData = (data) => {
     errors.push('Type must be either "film" or "non-film"');
   }
   
-  // Status validation
-  if (data.status && !['damaged', 'available', 'reserved'].includes(data.status)) {
-    errors.push('Status must be one of: damaged, available, reserved');
+  // Status validation - updated to include 'sold'
+  if (data.status && !['damaged', 'available', 'reserved', 'sold'].includes(data.status)) {
+    errors.push('Status must be one of: damaged, available, reserved, sold');
   }
   
   // Numeric fields validation
@@ -35,9 +35,6 @@ const validateInventoryData = (data) => {
   
   return errors;
 };
-
-// Get all inventory items
-// Fixed getAllInventory function in controllers/inventory.controller.js
 
 // Helper function to check if a string is numeric
 const isNumeric = (str) => {
@@ -70,6 +67,7 @@ const getAllInventory = async (req, res) => {
         { productId: { contains: searchTerm, mode: 'insensitive' } },
         { status: { contains: searchTerm, mode: 'insensitive' } },
         { type: { contains: searchTerm, mode: 'insensitive' } },
+        { invoiceNumber: { contains: searchTerm, mode: 'insensitive' } }, // Add invoice search
         
         // If search term is numeric, search in numeric fields too
         ...(isNumeric(searchTerm) ? [
@@ -104,7 +102,9 @@ const getAllInventory = async (req, res) => {
       'netWeight': 'netWeight',
       'width': 'width',
       'createdAt': 'createdAt',
-      'updatedAt': 'updatedAt'
+      'updatedAt': 'updatedAt',
+      'soldAt': 'soldAt',
+      'invoiceNumber': 'invoiceNumber'
     };
     
     const dbSortField = sortFieldMap[sortBy] || 'createdAt';
@@ -261,6 +261,16 @@ const createInventory = async (req, res) => {
       });
     }
 
+    // Set default status to 'available' if not provided
+    if (!inventoryData.status) {
+      inventoryData.status = 'available';
+    }
+
+    // If status is 'sold', add soldAt timestamp
+    if (inventoryData.status === 'sold') {
+      inventoryData.soldAt = new Date();
+    }
+
     const newInventory = await prisma.inventory.create({
       data: inventoryData,
     });
@@ -299,6 +309,18 @@ const updateInventory = async (req, res) => {
   }
   
   try {
+    // Get existing inventory item to check current status
+    const existingItem = await prisma.inventory.findUnique({
+      where: { id }
+    });
+    
+    if (!existingItem) {
+      return res.status(404).json({
+        success: false,
+        message: 'Inventory item not found'
+      });
+    }
+    
     // If updating productId, check if product exists
     if (inventoryData.productId) {
       const productExists = await Product.findById(inventoryData.productId);
@@ -320,6 +342,20 @@ const updateInventory = async (req, res) => {
           success: false,
           message: 'Roll ID already exists.',
         });
+      }
+    }
+    
+    // Handle status changes
+    if (inventoryData.status) {
+      // If changing from non-sold to sold, add soldAt timestamp
+      if (inventoryData.status === 'sold' && existingItem.status !== 'sold') {
+        inventoryData.soldAt = new Date();
+      }
+      
+      // If changing from sold to non-sold, clear soldAt and invoiceNumber
+      if (inventoryData.status !== 'sold' && existingItem.status === 'sold') {
+        inventoryData.soldAt = null;
+        inventoryData.invoiceNumber = null;
       }
     }
     
@@ -362,6 +398,26 @@ const deleteInventory = async (req, res) => {
   const { id } = req.params;
   
   try {
+    // Check if the inventory item exists and is not sold
+    const existingItem = await prisma.inventory.findUnique({
+      where: { id }
+    });
+    
+    if (!existingItem) {
+      return res.status(404).json({
+        success: false,
+        message: 'Inventory item not found'
+      });
+    }
+    
+    // Prevent deletion of sold items (optional business rule)
+    if (existingItem.status === 'sold') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete sold inventory items. Consider changing status instead.'
+      });
+    }
+    
     await prisma.inventory.delete({
       where: { id }
     });
@@ -414,25 +470,153 @@ const getInventoryByProductId = async (req, res) => {
   }
 };
 
-// Get inventory by status
+// Get inventory by status - updated to include 'sold'
 const getInventoryByStatus = async (req, res) => {
   const { status } = req.params;
   
-  if (!['damaged', 'available', 'reserved'].includes(status)) {
+  if (!['damaged', 'available', 'reserved', 'sold'].includes(status)) {
     return res.status(400).json({
       success: false,
-      message: 'Invalid status. Must be one of: damaged, available, reserved'
+      message: 'Invalid status. Must be one of: damaged, available, reserved, sold'
     });
   }
   
   try {
     const inventory = await prisma.inventory.findMany({
-      where: { status }
+      where: { status },
+      orderBy: status === 'sold' ? { soldAt: 'desc' } : { createdAt: 'desc' }
     });
     
     res.json({
       success: true,
       data: inventory
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+// New function: Get sold inventory items with invoice details
+const getSoldInventory = async (req, res) => {
+  try {
+    // Parse query parameters for pagination
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    
+    const soldInventory = await prisma.inventory.findMany({
+      where: { 
+        status: 'sold' 
+      },
+      skip,
+      take: limit,
+      orderBy: { 
+        soldAt: 'desc' 
+      }
+    });
+    
+    const total = await prisma.inventory.count({
+      where: { status: 'sold' }
+    });
+    
+    res.json({
+      success: true,
+      data: soldInventory,
+      total,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNextPage: page < Math.ceil(total / limit),
+        hasPrevPage: page > 1,
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+// New function: Get inventory by invoice number
+const getInventoryByInvoice = async (req, res) => {
+  const { invoiceNumber } = req.params;
+  
+  try {
+    const inventory = await prisma.inventory.findMany({
+      where: { 
+        invoiceNumber: invoiceNumber,
+        status: 'sold'
+      },
+      orderBy: { rollId: 'asc' }
+    });
+    
+    res.json({
+      success: true,
+      data: inventory
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+// New function: Bulk update inventory status (useful for invoice operations)
+const bulkUpdateInventoryStatus = async (req, res) => {
+  const { rollIds, status, invoiceNumber } = req.body;
+  
+  if (!rollIds || !Array.isArray(rollIds) || rollIds.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Roll IDs array is required'
+    });
+  }
+  
+  if (!['damaged', 'available', 'reserved', 'sold'].includes(status)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid status. Must be one of: damaged, available, reserved, sold'
+    });
+  }
+  
+  try {
+    const updateData = { 
+      status,
+      updatedAt: new Date()
+    };
+    
+    // Add invoice reference and soldAt when marking as sold
+    if (status === 'sold') {
+      updateData.soldAt = new Date();
+      if (invoiceNumber) {
+        updateData.invoiceNumber = invoiceNumber;
+      }
+    }
+    
+    // Clear invoice reference and soldAt when marking as available
+    if (status === 'available') {
+      updateData.invoiceNumber = null;
+      updateData.soldAt = null;
+    }
+    
+    const result = await prisma.inventory.updateMany({
+      where: {
+        rollId: { in: rollIds }
+      },
+      data: updateData
+    });
+    
+    res.json({
+      success: true,
+      message: `Updated ${result.count} inventory items to status: ${status}`,
+      updatedCount: result.count
     });
   } catch (error) {
     res.status(500).json({
@@ -449,5 +633,8 @@ module.exports = {
   updateInventory,
   deleteInventory,
   getInventoryByProductId,
-  getInventoryByStatus
+  getInventoryByStatus,
+  getSoldInventory,
+  getInventoryByInvoice,
+  bulkUpdateInventoryStatus
 };

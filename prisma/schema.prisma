@@ -21,9 +21,11 @@ model Inventory {
   micron      Float?   // Optional micron
   mtr         Float?   // Optional meter
   type        String   @default("film") // Options: "film" or "non-film"
-  status      String   @default("available") // Options: "damaged", "available", "reserved"
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  status        String    @default("available") // damaged, available, reserved, sold
+  invoiceNumber String?   
+  soldAt        DateTime? // Timestamp when item was sold
 
   @@index([productId])
   @@index([rollId])

@@ -5,7 +5,7 @@ const InvoiceSchema = new mongoose.Schema(
     invoiceNumber: {
       type: String,
       required: true,
-      unique: true, 
+      unique: true,
     },
     customer: {
       type: mongoose.Schema.Types.ObjectId,
@@ -40,9 +40,15 @@ const InvoiceSchema = new mongoose.Schema(
         },
       },
     ],
+    rollIds: [
+      {
+        type: String,
+        required: false,
+      },
+    ],
     otherCharges: {
       type: Number,
-      default: 0, // Default to 0 if no other charges are provided
+      default: 0,
     },
     cgst: {
       type: Number,
