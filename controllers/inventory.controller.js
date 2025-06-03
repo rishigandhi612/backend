@@ -51,12 +51,25 @@ const getAllInventory = async (req, res) => {
     const search = req.query.search;
     const status = req.query.status;
     const type = req.query.type;
+    const productId = req.query.productId; // Add productId filter
 
     // Calculate skip for pagination
     const skip = (page - 1) * limit;
 
     // Build where clause for filtering
     const whereClause = {};
+    
+    // Add productId filter if provided
+    if (productId) {
+      // Validate productId format if it's a MongoDB ObjectId
+      if (!isValidObjectId(productId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid product ID format'
+        });
+      }
+      whereClause.productId = productId;
+    }
     
     // Add comprehensive search filter
     if (search) {
@@ -67,7 +80,7 @@ const getAllInventory = async (req, res) => {
         { productId: { contains: searchTerm, mode: 'insensitive' } },
         { status: { contains: searchTerm, mode: 'insensitive' } },
         { type: { contains: searchTerm, mode: 'insensitive' } },
-        { invoiceNumber: { contains: searchTerm, mode: 'insensitive' } }, // Add invoice search
+        { invoiceNumber: { contains: searchTerm, mode: 'insensitive' } },
         
         // If search term is numeric, search in numeric fields too
         ...(isNumeric(searchTerm) ? [
@@ -110,7 +123,7 @@ const getAllInventory = async (req, res) => {
     const dbSortField = sortFieldMap[sortBy] || 'createdAt';
     orderBy[dbSortField] = sortOrder === 'desc' ? 'desc' : 'asc';
 
-    // Execute queries sequentially to avoid prepared statement conflicts
+    // Execute queries
     const inventory = await prisma.inventory.findMany({
       where: whereClause,
       skip,
@@ -122,11 +135,16 @@ const getAllInventory = async (req, res) => {
       where: whereClause,
     });
 
+    // Log for debugging
+    if (productId) {
+      console.log(`Fetched ${inventory.length} inventory items for product ${productId}`);
+    }
+
     // Return response in the format expected by frontend
     res.json({
       success: true,
       data: inventory,
-      total: total, // Frontend expects this at root level
+      total: total,
       pagination: {
         total,
         page,
@@ -135,9 +153,232 @@ const getAllInventory = async (req, res) => {
         hasNextPage: page < Math.ceil(total / limit),
         hasPrevPage: page > 1,
       },
+      // Add metadata for frontend context
+      filters: {
+        productId: productId || null,
+        status: status || null,
+        type: type || null,
+        search: search || null,
+      }
     });
   } catch (error) {
-    console.error('Pagination error:', error);
+    console.error('Inventory fetch error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      data: [],
+      total: 0,
+    });
+  }
+};
+
+// Dedicated endpoint for getting inventory by product ID with enhanced filtering
+const getInventoryByProductId = async (req, res) => {
+  const { productId } = req.params;
+  
+  if (!isValidObjectId(productId)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid product ID format'
+    });
+  }
+  
+  try {
+    // First verify that the product exists
+    const productExists = await Product.findById(productId);
+    if (!productExists) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found in the database'
+      });
+    }
+
+    // Parse query parameters for additional filtering
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const sortBy = req.query.sortBy || 'createdAt';
+    const sortOrder = req.query.sortOrder || 'desc';
+    const status = req.query.status;
+    const type = req.query.type;
+    const search = req.query.search;
+
+    // Calculate skip for pagination
+    const skip = (page - 1) * limit;
+
+    // Build where clause
+    const whereClause = { productId };
+    
+    // Add additional filters
+    if (status) {
+      whereClause.status = status;
+    }
+    
+    if (type) {
+      whereClause.type = type;
+    }
+
+    // Add search functionality
+    if (search) {
+      const searchTerm = search.trim();
+      whereClause.OR = [
+        { rollId: { contains: searchTerm, mode: 'insensitive' } },
+        { status: { contains: searchTerm, mode: 'insensitive' } },
+        { type: { contains: searchTerm, mode: 'insensitive' } },
+        { invoiceNumber: { contains: searchTerm, mode: 'insensitive' } },
+        
+        // If search term is numeric, search in numeric fields too
+        ...(isNumeric(searchTerm) ? [
+          { netWeight: { equals: parseFloat(searchTerm) } },
+          { grossWeight: { equals: parseFloat(searchTerm) } },
+          { width: { equals: parseFloat(searchTerm) } },
+          { micron: { equals: parseFloat(searchTerm) } },
+          { mtr: { equals: parseFloat(searchTerm) } },
+        ] : []),
+      ];
+    }
+
+    // Build orderBy clause
+    const orderBy = {};
+    const sortFieldMap = {
+      'rollId': 'rollId',
+      'status': 'status',
+      'type': 'type',
+      'netWeight': 'netWeight',
+      'width': 'width',
+      'createdAt': 'createdAt',
+      'updatedAt': 'updatedAt',
+      'soldAt': 'soldAt',
+      'invoiceNumber': 'invoiceNumber'
+    };
+    
+    const dbSortField = sortFieldMap[sortBy] || 'createdAt';
+    orderBy[dbSortField] = sortOrder === 'desc' ? 'desc' : 'asc';
+
+    // Execute queries
+    const inventory = await prisma.inventory.findMany({
+      where: whereClause,
+      skip,
+      take: limit,
+      orderBy,
+    });
+
+    const total = await prisma.inventory.count({
+      where: whereClause,
+    });
+
+    console.log(`Found ${inventory.length} inventory items for product ${productId} (${productExists.name})`);
+    
+    res.json({
+      success: true,
+      data: inventory,
+      total: total,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNextPage: page < Math.ceil(total / limit),
+        hasPrevPage: page > 1,
+      },
+      // Include product information in response
+      product: {
+        _id: productExists._id,
+        name: productExists.name,
+      },
+      filters: {
+        productId: productId,
+        status: status || null,
+        type: type || null,
+        search: search || null,
+      }
+    });
+  } catch (error) {
+    console.error(`Error fetching inventory for product ${productId}:`, error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      data: [],
+      total: 0,
+    });
+  }
+};
+
+// Get available inventory items for a specific product (helper for invoicing)
+const getAvailableInventoryByProductId = async (req, res) => {
+  const { productId } = req.params;
+  
+  if (!isValidObjectId(productId)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid product ID format'
+    });
+  }
+  
+  try {
+    // Verify product exists
+    const productExists = await Product.findById(productId);
+    if (!productExists) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found in the database'
+      });
+    }
+
+    // Parse query parameters
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 1000; // Default to high limit for inventory selection
+    const sortBy = req.query.sortBy || 'rollId';
+    const sortOrder = req.query.sortOrder || 'asc';
+
+    // Calculate skip for pagination
+    const skip = (page - 1) * limit;
+
+    // Build where clause for available items only
+    const whereClause = { 
+      productId,
+      status: {
+        in: ['available', 'reserved'] // Only show available and reserved items
+      }
+    };
+
+    // Build orderBy clause
+    const orderBy = {};
+    const dbSortField = sortBy === 'rollId' ? 'rollId' : 'createdAt';
+    orderBy[dbSortField] = sortOrder === 'desc' ? 'desc' : 'asc';
+
+    // Execute queries
+    const inventory = await prisma.inventory.findMany({
+      where: whereClause,
+      skip,
+      take: limit,
+      orderBy,
+    });
+
+    const total = await prisma.inventory.count({
+      where: whereClause,
+    });
+
+    console.log(`Found ${inventory.length} available inventory items for product ${productId} (${productExists.name})`);
+    
+    res.json({
+      success: true,
+      data: inventory,
+      total: total,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNextPage: page < Math.ceil(total / limit),
+        hasPrevPage: page > 1,
+      },
+      product: {
+        _id: productExists._id,
+        name: productExists.name,
+      }
+    });
+  } catch (error) {
+    console.error(`Error fetching available inventory for product ${productId}:`, error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -175,21 +416,13 @@ const getInventoryById = async (req, res) => {
   }
 };
 
-// Create inventory
+// Generate sequential rollId
 const generateSequentialRollId = async (netWeight, width) => {
-  // Determine prefix based on width (I for < 70, M for >= 70)
   const widthPrefix = width < 70 ? 'I' : 'M';
-  
-  // Format width to 4 digits (remove decimal point and pad/truncate)
   const widthStr = Math.round(width * 100).toString().padStart(4, '0').slice(0, 4);
-  
-  // Format net weight to 4 digits (remove decimal point and pad/truncate)
   const weightStr = Math.round(netWeight * 100).toString().padStart(4, '0').slice(0, 4);
-  
-  // Create the base pattern (without sequence number)
   const basePattern = `${widthPrefix}${widthStr}${weightStr}`;
 
-  // Find the latest inventory with this base pattern
   const latestInventory = await prisma.inventory.findFirst({
     where: {
       rollId: {
@@ -209,9 +442,7 @@ const generateSequentialRollId = async (netWeight, width) => {
     }
   }
 
-  // Format sequence to 2 digits
   const sequenceStr = sequence.toString().padStart(2, '0');
-  
   return `${basePattern}${sequenceStr}`;
 };
 
@@ -250,7 +481,7 @@ const createInventory = async (req, res) => {
       );
     }
 
-    // Final uniqueness check before insert - rollId is unique in schema
+    // Final uniqueness check before insert
     const existing = await prisma.inventory.findUnique({
       where: { rollId: inventoryData.rollId },
     });
@@ -280,7 +511,6 @@ const createInventory = async (req, res) => {
       data: newInventory,
     });
   } catch (error) {
-    // Handle unique constraint violation if rollId has unique constraint at DB level
     if (error.code === 'P2002' && error.meta?.target?.includes('rollId')) {
       return res.status(409).json({
         success: false,
@@ -300,7 +530,6 @@ const updateInventory = async (req, res) => {
   const { id } = req.params;
   const inventoryData = req.body;
   
-  // If updating productId, validate it
   if (inventoryData.productId && !isValidObjectId(inventoryData.productId)) {
     return res.status(400).json({
       success: false,
@@ -309,7 +538,6 @@ const updateInventory = async (req, res) => {
   }
   
   try {
-    // Get existing inventory item to check current status
     const existingItem = await prisma.inventory.findUnique({
       where: { id }
     });
@@ -321,7 +549,6 @@ const updateInventory = async (req, res) => {
       });
     }
     
-    // If updating productId, check if product exists
     if (inventoryData.productId) {
       const productExists = await Product.findById(inventoryData.productId);
       if (!productExists) {
@@ -332,7 +559,6 @@ const updateInventory = async (req, res) => {
       }
     }
     
-    // If updating rollId, check for uniqueness
     if (inventoryData.rollId) {
       const existing = await prisma.inventory.findUnique({
         where: { rollId: inventoryData.rollId },
@@ -347,19 +573,16 @@ const updateInventory = async (req, res) => {
     
     // Handle status changes
     if (inventoryData.status) {
-      // If changing from non-sold to sold, add soldAt timestamp
       if (inventoryData.status === 'sold' && existingItem.status !== 'sold') {
         inventoryData.soldAt = new Date();
       }
       
-      // If changing from sold to non-sold, clear soldAt and invoiceNumber
       if (inventoryData.status !== 'sold' && existingItem.status === 'sold') {
         inventoryData.soldAt = null;
         inventoryData.invoiceNumber = null;
       }
     }
     
-    // Update inventory in PostgreSQL
     const updatedInventory = await prisma.inventory.update({
       where: { id },
       data: inventoryData
@@ -370,7 +593,6 @@ const updateInventory = async (req, res) => {
       data: updatedInventory
     });
   } catch (error) {
-    // Handle the case where the inventory item doesn't exist
     if (error.code === 'P2025') {
       return res.status(404).json({
         success: false,
@@ -378,7 +600,6 @@ const updateInventory = async (req, res) => {
       });
     }
     
-    // Handle unique constraint violation
     if (error.code === 'P2002' && error.meta?.target?.includes('rollId')) {
       return res.status(409).json({
         success: false,
@@ -398,7 +619,6 @@ const deleteInventory = async (req, res) => {
   const { id } = req.params;
   
   try {
-    // Check if the inventory item exists and is not sold
     const existingItem = await prisma.inventory.findUnique({
       where: { id }
     });
@@ -410,7 +630,6 @@ const deleteInventory = async (req, res) => {
       });
     }
     
-    // Prevent deletion of sold items (optional business rule)
     if (existingItem.status === 'sold') {
       return res.status(400).json({
         success: false,
@@ -427,7 +646,6 @@ const deleteInventory = async (req, res) => {
       message: `Inventory item with ID ${id} has been deleted`
     });
   } catch (error) {
-    // Handle the case where the inventory item doesn't exist
     if (error.code === 'P2025') {
       return res.status(404).json({
         success: false,
@@ -442,35 +660,7 @@ const deleteInventory = async (req, res) => {
   }
 };
 
-// Get inventory by product ID
-const getInventoryByProductId = async (req, res) => {
-  const { productId } = req.params;
-  
-  if (!isValidObjectId(productId)) {
-    return res.status(400).json({
-      success: false,
-      message: 'Invalid product ID format'
-    });
-  }
-  
-  try {
-    const inventory = await prisma.inventory.findMany({
-      where: { productId }
-    });
-    
-    res.json({
-      success: true,
-      data: inventory
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-};
-
-// Get inventory by status - updated to include 'sold'
+// Get inventory by status
 const getInventoryByStatus = async (req, res) => {
   const { status } = req.params;
   
@@ -499,10 +689,9 @@ const getInventoryByStatus = async (req, res) => {
   }
 };
 
-// New function: Get sold inventory items with invoice details
+// Get sold inventory items
 const getSoldInventory = async (req, res) => {
   try {
-    // Parse query parameters for pagination
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
@@ -543,7 +732,7 @@ const getSoldInventory = async (req, res) => {
   }
 };
 
-// New function: Get inventory by invoice number
+// Get inventory by invoice number
 const getInventoryByInvoice = async (req, res) => {
   const { invoiceNumber } = req.params;
   
@@ -568,7 +757,7 @@ const getInventoryByInvoice = async (req, res) => {
   }
 };
 
-// New function: Bulk update inventory status (useful for invoice operations)
+// Bulk update inventory status
 const bulkUpdateInventoryStatus = async (req, res) => {
   const { rollIds, status, invoiceNumber } = req.body;
   
@@ -592,7 +781,6 @@ const bulkUpdateInventoryStatus = async (req, res) => {
       updatedAt: new Date()
     };
     
-    // Add invoice reference and soldAt when marking as sold
     if (status === 'sold') {
       updateData.soldAt = new Date();
       if (invoiceNumber) {
@@ -600,7 +788,6 @@ const bulkUpdateInventoryStatus = async (req, res) => {
       }
     }
     
-    // Clear invoice reference and soldAt when marking as available
     if (status === 'available') {
       updateData.invoiceNumber = null;
       updateData.soldAt = null;
@@ -633,6 +820,7 @@ module.exports = {
   updateInventory,
   deleteInventory,
   getInventoryByProductId,
+  getAvailableInventoryByProductId, // New export
   getInventoryByStatus,
   getSoldInventory,
   getInventoryByInvoice,

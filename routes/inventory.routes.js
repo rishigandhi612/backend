@@ -1,27 +1,39 @@
 // routes/inventory.routes.js
 const express = require('express');
 const router = express.Router();
-const inventoryController = require('../controllers/inventory.controller');
+const {
+  getAllInventory,
+  getInventoryById,
+  createInventory,
+  updateInventory,
+  deleteInventory,
+  getInventoryByProductId,
+  getAvailableInventoryByProductId,
+  getInventoryByStatus,
+  getSoldInventory,
+  getInventoryByInvoice,
+  bulkUpdateInventoryStatus
+} = require('../controllers/inventory.controller');
 
-// Get all inventory items
-router.get('/', inventoryController.getAllInventory);
+// Base inventory routes
+router.get('/', getAllInventory); // GET /api/inventory?productId=xxx will work
+router.post('/', createInventory);
+router.put('/bulk-update-status', bulkUpdateInventoryStatus);
 
-// Get inventory by ID
-router.get('/:id', inventoryController.getInventoryById);
+// Specific product inventory routes
+router.get('/product/:productId', getInventoryByProductId); // GET /api/inventory/product/:productId
+router.get('/product/:productId/available', getAvailableInventoryByProductId); // GET /api/inventory/product/:productId/available
 
-// Create new inventory
-router.post('/', inventoryController.createInventory);
+// Status-based routes
+router.get('/status/:status', getInventoryByStatus);
+router.get('/sold', getSoldInventory);
 
-// Update inventory
-router.put('/:id', inventoryController.updateInventory);
+// Invoice-based routes
+router.get('/invoice/:invoiceNumber', getInventoryByInvoice);
 
-// Delete inventory
-router.delete('/:id', inventoryController.deleteInventory);
-
-// Get inventory by product ID
-router.get('/product/:productId', inventoryController.getInventoryByProductId);
-
-// Get inventory by status
-router.get('/status/:status', inventoryController.getInventoryByStatus);
+// Individual inventory item routes
+router.get('/:id', getInventoryById);
+router.put('/:id', updateInventory);
+router.delete('/:id', deleteInventory);
 
 module.exports = router;
