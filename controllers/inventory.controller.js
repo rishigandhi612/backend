@@ -135,11 +135,6 @@ const getAllInventory = async (req, res) => {
       where: whereClause,
     });
 
-    // Log for debugging
-    if (productId) {
-      console.log(`Fetched ${inventory.length} inventory items for product ${productId}`);
-    }
-
     // Return response in the format expected by frontend
     res.json({
       success: true,
@@ -265,9 +260,7 @@ const getInventoryByProductId = async (req, res) => {
     const total = await prisma.inventory.count({
       where: whereClause,
     });
-
-    console.log(`Found ${inventory.length} inventory items for product ${productId} (${productExists.name})`);
-    
+  
     res.json({
       success: true,
       data: inventory,
@@ -357,9 +350,7 @@ const getAvailableInventoryByProductId = async (req, res) => {
     const total = await prisma.inventory.count({
       where: whereClause,
     });
-
-    console.log(`Found ${inventory.length} available inventory items for product ${productId} (${productExists.name})`);
-    
+   
     res.json({
       success: true,
       data: inventory,

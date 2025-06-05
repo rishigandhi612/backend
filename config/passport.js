@@ -11,7 +11,7 @@ passport.use(new LocalStrategy(
  
   { usernameField: 'emailid' }, // Use 'emailid' instead of default 'username'
   function(emailid, password, done) {
-    console.log(emailid,password);
+    // console.log(emailid,password);
     // Find user in the database by email
     User.findOne({ emailid: emailid }, function (err, user) {
       if (err) { return done(err); }  // Handle error
