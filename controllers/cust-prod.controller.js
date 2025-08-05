@@ -63,7 +63,6 @@ const updateInventoryStatus = async (rollIds, status, invoiceNumber = null) => {
       data: updateData
     });
     
-    console.log(`Updated ${rollIds.length} inventory items to status: ${status}`);
   } catch (error) {
     console.error('Error updating inventory status:', error);
     throw error;

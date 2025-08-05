@@ -1,8 +1,8 @@
 const express = require("express");
-const { sendInvoiceEmail } = require("../controllers/email.controller.js");
+const { sendOrderEmail } = require("../controllers/email.controller.js");
 
 const router = express.Router();
 
-router.post("/email", sendInvoiceEmail);
+router.post("/email", sendOrderEmail);
 
 module.exports = router;

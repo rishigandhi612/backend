@@ -9,14 +9,7 @@ const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 const registerUser = async (req, res) => {
   try {
     const { emailid, password } = req.body;
-    
-    // Debug the incoming password during registration
-    console.log('Registration password details:');
-    console.log('- Password:', password);
-    console.log('- Password length:', password.length);
-    console.log('- Password type:', typeof password);
-    console.log('- Password bytes:', Array.from(Buffer.from(password, 'utf8')));
-
+ 
     // Check if the user already exists
     let user = await User.findOne({ emailid });
     if (user) {
@@ -28,12 +21,9 @@ const registerUser = async (req, res) => {
 
     // Hash the password before saving
     const hashedPassword = await bcrypt.hash(password, 10);
-    console.log('Generated hash:', hashedPassword);
-    
+   
     // Test the hash immediately after creation
     const immediateTest = await bcrypt.compare(password, hashedPassword);
-    console.log('Immediate hash test:', immediateTest); // Should be true
-
     // Create a new user
     user = new User({ emailid, password: hashedPassword });
     await user.save();
