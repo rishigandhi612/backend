@@ -42,6 +42,7 @@ const sendOrderEmail = async (req, res) => {
       contactPerson,
       phoneNumber,
       expectedDeliveryDate,
+      remarks,
     } = req.body;
 
     // Validate required fields
@@ -58,53 +59,58 @@ const sendOrderEmail = async (req, res) => {
     const totalItems = items.length;
     const totalQuantity = items.reduce((sum, item) => sum + (item.totalQty || 0), 0);
 
-    // Generate items HTML with new columns
+    // Generate items HTML with professional styling
     const itemsHTML = items.map((item, index) => `
-      <tr style="border-bottom: 1px solid #e0e0e0; transition: background-color 0.2s;">
-        <td style="padding: 15px 12px; text-align: center; font-weight: 500; color: #424242;">${index + 1}</td>
-        <td style="padding: 15px 12px; text-align: left; color: #424242;">
-          <div style="font-weight: 500; margin-bottom: 2px;">${item.name}</div>
-          ${item.description ? `<div style="font-size: 12px; color: #757575; font-style: italic;">${item.description}</div>` : ''}
+      <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.1); backdrop-filter: blur(10px); transition: all 0.3s ease;">
+        <td style="padding: 20px 15px; text-align: center; font-weight: 600; color: #2c3e50; font-size: 14px;">${index + 1}</td>
+        <td style="padding: 20px 15px; text-align: left; color: #2c3e50;">
+          <div style="font-weight: 600; margin-bottom: 4px; font-size: 15px;">${item.name}</div>
+          ${item.description ? `<div style="font-size: 13px; color: #7f8c8d; line-height: 1.4;">${item.description}</div>` : ''}
         </td>
-        <td style="padding: 15px 12px; text-align: center; color: #424242; font-weight: 500;">${item.packSize || '-'}</td>
-        <td style="padding: 15px 12px; text-align: center; color: #424242; font-weight: 500;">${item.nos || 0}</td>
-        <td style="padding: 15px 12px; text-align: center; color: #FF5722; font-weight: 600; background: rgba(255, 87, 34, 0.05);">${item.totalQty || 0}</td>
+        <td style="padding: 20px 15px; text-align: center; color: #2c3e50; font-weight: 500; font-size: 14px;">${item.packSize || '-'}</td>
+        <td style="padding: 20px 15px; text-align: center; color: #2c3e50; font-weight: 500; font-size: 14px;">${item.nos || 0}</td>
+        <td style="padding: 20px 15px; text-align: center; color: #e74c3c; font-weight: 700; font-size: 16px; background: linear-gradient(135deg, rgba(231, 76, 60, 0.1), rgba(231, 76, 60, 0.05)); border-radius: 6px;">${item.totalQty || 0}</td>
       </tr>
     `).join('');
 
     const currentDate = orderDate || new Date().toLocaleDateString('en-IN');
 
-    // Enhanced delivery information with better styling
+    // Professional third-party delivery information
     let deliveryInfo = '';
     if (deliveryType === 'THIRD_PARTY_DELIVERY' && thirdPartyCustomer) {
       deliveryInfo = `
-        <div style="background: linear-gradient(135deg, #fff3e0 0%, #ffecb3 100%); padding: 25px; border-radius: 12px; margin-bottom: 25px; border-left: 4px solid #FF5722; box-shadow: 0 2px 8px rgba(255, 87, 34, 0.1);">
-          <div style="display: flex; align-items: center; margin-bottom: 15px;">
-            <div style="background: #FF5722; color: white; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; margin-right: 12px; font-weight: bold; font-size: 14px;">3</div>
-            <h3 style="color: #FF5722; margin: 0; font-size: 18px; font-weight: 600;">Third Party Delivery Information</h3>
+        <div style="background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.85)); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 16px; padding: 30px; margin-bottom: 25px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);">
+          <div style="border-left: 4px solid #3498db; padding-left: 20px; margin-bottom: 20px;">
+            <h3 style="color: #2c3e50; margin: 0 0 10px 0; font-size: 20px; font-weight: 700; letter-spacing: -0.3px;">Third Party Delivery</h3>
+            <p style="color: #7f8c8d; margin: 0; font-size: 14px; line-height: 1.5;">Delivery to be coordinated with the following customer</p>
           </div>
-          <div style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #ffcc80;">
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px;">
+          <div style="background: linear-gradient(135deg, rgba(52, 152, 219, 0.05), rgba(52, 152, 219, 0.02)); border-radius: 12px; padding: 25px; border: 1px solid rgba(52, 152, 219, 0.15);">
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
               <div>
-                <strong style="color: #FF5722;">Customer Name:</strong>
-                <div style="color: #424242; margin-top: 4px;">${thirdPartyCustomer.name}</div>
+                <div style="color: #3498db; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Customer Name</div>
+                <div style="color: #2c3e50; font-weight: 600; font-size: 16px;">${thirdPartyCustomer.name}</div>
               </div>
               <div>
-                <strong style="color: #FF5722;">Email:</strong>
-                <div style="color: #424242; margin-top: 4px;">${thirdPartyCustomer.email_id}</div>
-              </div>
-              <div>
-                <strong style="color: #FF5722;">Phone:</strong>
-                <div style="color: #424242; margin-top: 4px;">${thirdPartyCustomer.phone_no}</div>
-              </div>
-              <div style="grid-column: 1 / -1;">
-                <strong style="color: #FF5722;">Delivery Address:</strong>
-                <div style="color: #424242; margin-top: 4px; line-height: 1.4;">
-                  ${thirdPartyCustomer.address.line1}<br>
-                  ${thirdPartyCustomer.address.city}, ${thirdPartyCustomer.address.state} - ${thirdPartyCustomer.address.pincode}
-                </div>
+                <div style="color: #3498db; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Delivery City</div>
+                <div style="color: #2c3e50; font-weight: 600; font-size: 16px;">${thirdPartyCustomer.address?.city || 'Not specified'}</div>
               </div>
             </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Remarks section
+    let remarksSection = '';
+    if (remarks && remarks.trim()) {
+      remarksSection = `
+        <div style="background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.85)); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 16px; padding: 30px; margin-bottom: 25px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);">
+          <div style="border-left: 4px solid #f39c12; padding-left: 20px; margin-bottom: 20px;">
+            <h3 style="color: #2c3e50; margin: 0 0 10px 0; font-size: 20px; font-weight: 700; letter-spacing: -0.3px;">Special Instructions</h3>
+            <p style="color: #7f8c8d; margin: 0; font-size: 14px; line-height: 1.5;">Please note the following requirements</p>
+          </div>
+          <div style="background: linear-gradient(135deg, rgba(243, 156, 18, 0.05), rgba(243, 156, 18, 0.02)); border-radius: 12px; padding: 25px; border: 1px solid rgba(243, 156, 18, 0.15);">
+            <div style="color: #2c3e50; font-size: 15px; line-height: 1.7; font-weight: 500;">${remarks}</div>
           </div>
         </div>
       `;
@@ -138,9 +144,10 @@ const sendOrderEmail = async (req, res) => {
         ${deliveryType === 'THIRD_PARTY_DELIVERY' && thirdPartyCustomer ? `
         Third Party Delivery Details:
         Customer: ${thirdPartyCustomer.name}
-        Address: ${thirdPartyCustomer.address.line1}, ${thirdPartyCustomer.address.city}, ${thirdPartyCustomer.address.state} - ${thirdPartyCustomer.address.pincode}
-        Contact: ${thirdPartyCustomer.email_id} | ${thirdPartyCustomer.phone_no}
+        City: ${thirdPartyCustomer.address?.city || 'Not specified'}
         ` : ''}
+        
+        ${remarks ? `Special Instructions: ${remarks}` : ''}
         
         Please confirm receipt and provide delivery timeline within 24 hours.
         
@@ -159,37 +166,46 @@ const sendOrderEmail = async (req, res) => {
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <title>Purchase Order - ${poNumber}</title>
           <style>
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+            
+            .glass-effect {
+              background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.05));
+              backdrop-filter: blur(20px);
+              border: 1px solid rgba(255, 255, 255, 0.2);
+              border-radius: 16px;
+            }
+            
+            .gradient-primary {
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            }
+            
+            .gradient-secondary {
+              background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            }
             
             .hover-effect:hover {
-              background-color: #fff3e0 !important;
+              background: linear-gradient(135deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.08));
+              transform: translateY(-2px);
+              box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
             }
             
-            .status-badge {
-              background: linear-gradient(135deg, #FF5722, #ff7043);
+            .professional-badge {
+              background: linear-gradient(135deg, #2c3e50, #34495e);
               color: white;
-              padding: 8px 16px;
-              border-radius: 20px;
-              font-size: 12px;
-              font-weight: 600;
+              padding: 12px 24px;
+              border-radius: 25px;
+              font-size: 13px;
+              font-weight: 700;
               text-transform: uppercase;
-              letter-spacing: 0.5px;
+              letter-spacing: 1.2px;
               display: inline-block;
+              box-shadow: 0 4px 15px rgba(44, 62, 80, 0.3);
             }
             
-            .info-card {
-              background: white;
-              border-radius: 12px;
-              padding: 20px;
-              box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-              border: 1px solid #f0f0f0;
-              margin-bottom: 20px;
-            }
-            
-            .gradient-header {
-              background: linear-gradient(135deg, #FF5722 0%, #ff7043 50%, #ff8a65 100%);
-              background-size: 200% 200%;
-              animation: gradientShift 6s ease infinite;
+            .animated-gradient {
+              background: linear-gradient(-45deg, #667eea, #764ba2, #f093fb, #f5576c);
+              background-size: 400% 400%;
+              animation: gradientShift 8s ease infinite;
             }
             
             @keyframes gradientShift {
@@ -197,112 +213,123 @@ const sendOrderEmail = async (req, res) => {
               50% { background-position: 100% 50%; }
               100% { background-position: 0% 50%; }
             }
+            
+            .glass-card {
+              background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.85));
+              backdrop-filter: blur(20px);
+              border: 1px solid rgba(255, 255, 255, 0.3);
+              border-radius: 16px;
+              box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            }
+            
+            @media (max-width: 600px) {
+              .responsive-grid {
+                grid-template-columns: 1fr !important;
+              }
+            }
           </style>
         </head>
-        <body style="font-family: 'Inter', Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background: linear-gradient(135deg, #fafafa 0%, #f5f5f5 100%);">
-          <div style="max-width: 700px; margin: 40px auto; background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1);">
+        <body style="font-family: 'Inter', Arial, sans-serif; line-height: 1.6; color: #2c3e50; margin: 0; padding: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%); min-height: 100vh;">
+          <div style="max-width: 750px; margin: 40px auto; background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.9)); backdrop-filter: blur(30px); border-radius: 24px; overflow: hidden; box-shadow: 0 25px 80px rgba(0, 0, 0, 0.15); border: 1px solid rgba(255, 255, 255, 0.3);">
             
             <!-- Header Section -->
-            <div class="gradient-header" style="color: white; padding: 40px 30px; text-align: center; position: relative;">
-              <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="20" cy="20" r="2" fill="white" opacity="0.1"/><circle cx="80" cy="80" r="2" fill="white" opacity="0.1"/><circle cx="40" cy="70" r="1" fill="white" opacity="0.1"/><circle cx="70" cy="30" r="1.5" fill="white" opacity="0.1"/></svg>'); opacity: 0.3;"></div>
+            <div class="animated-gradient" style="color: white; padding: 50px 40px; text-align: center; position: relative; overflow: hidden;">
+              <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.1);"></div>
               <div style="position: relative; z-index: 1;">
-                <h1 style="margin: 0; font-size: 32px; font-weight: 700; letter-spacing: -0.5px;">Purchase Order</h1>
-                <div style="margin: 15px 0; opacity: 0.95;">
-                  <div class="status-badge">${poNumber}</div>
+                <h1 style="margin: 0; font-size: 36px; font-weight: 800; letter-spacing: -1px; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);">Purchase Order</h1>
+                <div style="margin: 20px 0;">
+                  <div class="professional-badge">${poNumber}</div>
                 </div>
-                <p style="margin: 15px 0 0 0; font-size: 16px; opacity: 0.9; font-weight: 400;">Professional procurement request from Hemant Traders</p>
+                <p style="margin: 20px 0 0 0; font-size: 17px; opacity: 0.95; font-weight: 400; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);">Professional Procurement Request</p>
               </div>
             </div>
 
             <!-- Main Content -->
-            <div style="padding: 35px 30px;">
+            <div style="padding: 40px;">
               
               <!-- Greeting Section -->
-              <div class="info-card">
-                <div style="display: flex; align-items: center; margin-bottom: 20px;">
-                  <div style="background: linear-gradient(135deg, #FF5722, #ff7043); color: white; border-radius: 50%; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; margin-right: 15px; font-weight: bold; font-size: 18px;">👋</div>
-                  <div>
-                    <h2 style="color: #FF5722; margin: 0; font-size: 24px; font-weight: 600;">Dear ${supplierName},</h2>
-                    <p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">We appreciate your continued partnership</p>
-                  </div>
+              <div class="glass-card" style="padding: 35px; margin-bottom: 30px;">
+                <div style="border-left: 4px solid #667eea; padding-left: 25px; margin-bottom: 25px;">
+                  <h2 style="color: #2c3e50; margin: 0 0 10px 0; font-size: 28px; font-weight: 700; letter-spacing: -0.5px;">Dear ${supplierName},</h2>
+                  <p style="margin: 0; color: #7f8c8d; font-size: 16px; line-height: 1.6;">We value our partnership and appreciate your continued service excellence</p>
                 </div>
-                <p style="font-size: 16px; margin: 0; color: #424242; line-height: 1.6;">
-                  We hope this message finds you well. Please find our detailed purchase order below and kindly confirm receipt with your delivery timeline.
+                <p style="font-size: 17px; margin: 0; color: #2c3e50; line-height: 1.7; font-weight: 400;">
+                  Please review the detailed purchase order specifications below. We request your prompt confirmation along with the proposed delivery schedule.
                 </p>
               </div>
 
               <!-- Order Details Section -->
-              <div class="info-card">
-                <div style="display: flex; align-items: center; margin-bottom: 20px;">
-                  <div style="background: linear-gradient(135deg, #FF5722, #ff7043); color: white; border-radius: 50%; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; margin-right: 15px; font-weight: bold; font-size: 16px;">📋</div>
-                  <h3 style="color: #FF5722; margin: 0; font-size: 20px; font-weight: 600;">Order Information</h3>
+              <div class="glass-card" style="padding: 35px; margin-bottom: 30px;">
+                <div style="border-left: 4px solid #e74c3c; padding-left: 25px; margin-bottom: 25px;">
+                  <h3 style="color: #2c3e50; margin: 0 0 10px 0; font-size: 22px; font-weight: 700; letter-spacing: -0.3px;">Order Information</h3>
+                  <p style="color: #7f8c8d; margin: 0; font-size: 14px; line-height: 1.5;">Complete order details and specifications</p>
                 </div>
                 
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; padding: 20px; background: linear-gradient(135deg, #fff3e0 0%, #ffecb3 20%, #fff3e0 100%); border-radius: 12px; border-left: 4px solid #FF5722;">
+                <div class="responsive-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 25px; padding: 30px; background: linear-gradient(135deg, rgba(102, 126, 234, 0.05), rgba(102, 126, 234, 0.02)); border-radius: 16px; border: 1px solid rgba(102, 126, 234, 0.15);">
                   <div>
-                    <div style="color: #FF5722; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px;">PO Number</div>
-                    <div style="color: #424242; font-weight: 600; font-size: 16px;">${poNumber}</div>
+                    <div style="color: #667eea; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;">Purchase Order Number</div>
+                    <div style="color: #2c3e50; font-weight: 700; font-size: 18px;">${poNumber}</div>
                   </div>
                   <div>
-                    <div style="color: #FF5722; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px;">Order Date</div>
-                    <div style="color: #424242; font-weight: 600; font-size: 16px;">${currentDate}</div>
+                    <div style="color: #667eea; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;">Order Date</div>
+                    <div style="color: #2c3e50; font-weight: 700; font-size: 18px;">${currentDate}</div>
                   </div>
                   ${expectedDeliveryDate ? `
                   <div>
-                    <div style="color: #FF5722; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px;">Expected Delivery</div>
-                    <div style="color: #424242; font-weight: 600; font-size: 16px;">${expectedDeliveryDate}</div>
+                    <div style="color: #667eea; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;">Expected Delivery</div>
+                    <div style="color: #2c3e50; font-weight: 700; font-size: 18px;">${expectedDeliveryDate}</div>
                   </div>
                   ` : ''}
                   <div>
-                    <div style="color: #FF5722; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px;">Delivery Type</div>
-                    <div style="color: #424242; font-weight: 600; font-size: 16px;">${deliveryType === 'NORMAL_DELIVERY' ? 'Normal Delivery' : 'Third Party Delivery'}</div>
+                    <div style="color: #667eea; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;">Delivery Type</div>
+                    <div style="color: #2c3e50; font-weight: 700; font-size: 18px;">${deliveryType === 'NORMAL_DELIVERY' ? 'Standard Delivery' : 'Third Party Delivery'}</div>
                   </div>
                   ${contactPerson ? `
                   <div>
-                    <div style="color: #FF5722; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px;">Contact Person</div>
-                    <div style="color: #424242; font-weight: 600; font-size: 16px;">${contactPerson}</div>
+                    <div style="color: #667eea; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;">Contact Person</div>
+                    <div style="color: #2c3e50; font-weight: 700; font-size: 18px;">${contactPerson}</div>
                   </div>
                   ` : ''}
                   ${phoneNumber ? `
                   <div>
-                    <div style="color: #FF5722; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px;">Phone</div>
-                    <div style="color: #424242; font-weight: 600; font-size: 16px;">${phoneNumber}</div>
+                    <div style="color: #667eea; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;">Contact Number</div>
+                    <div style="color: #2c3e50; font-weight: 700; font-size: 18px;">${phoneNumber}</div>
                   </div>
                   ` : ''}
                 </div>
               </div>
 
               <!-- Items Section -->
-              <div class="info-card">
-                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
-                  <div style="display: flex; align-items: center;">
-                    <div style="background: linear-gradient(135deg, #FF5722, #ff7043); color: white; border-radius: 50%; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; margin-right: 15px; font-weight: bold; font-size: 16px;">📦</div>
-                    <h3 style="color: #FF5722; margin: 0; font-size: 20px; font-weight: 600;">Items Required</h3>
+              <div class="glass-card" style="padding: 35px; margin-bottom: 30px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 25px; flex-wrap: wrap; gap: 15px;">
+                  <div style="border-left: 4px solid #27ae60; padding-left: 25px;">
+                    <h3 style="color: #2c3e50; margin: 0 0 10px 0; font-size: 22px; font-weight: 700; letter-spacing: -0.3px;">Items Required</h3>
+                    <p style="color: #7f8c8d; margin: 0; font-size: 14px; line-height: 1.5;">Detailed item specifications and quantities</p>
                   </div>
                   <div style="text-align: right;">
-                    <div style="background: linear-gradient(135deg, #FF5722, #ff7043); color: white; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; margin-bottom: 4px;">${totalItems} Items</div>
-                    <div style="color: #666; font-size: 12px;">Total Qty: ${totalQuantity}</div>
+                    <div style="background: linear-gradient(135deg, #27ae60, #2ecc71); color: white; padding: 8px 16px; border-radius: 20px; font-size: 13px; font-weight: 700; margin-bottom: 6px; display: inline-block;">${totalItems} Items</div>
+                    <div style="color: #7f8c8d; font-size: 13px; font-weight: 600;">Total Quantity: ${totalQuantity}</div>
                   </div>
                 </div>
                 
-                <div style="overflow-x: auto; border-radius: 12px; border: 1px solid #e0e0e0;">
-                  <table style="width: 100%; border-collapse: collapse; background: white;">
+                <div style="overflow-x: auto; border-radius: 16px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);">
+                  <table style="width: 100%; border-collapse: collapse; background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.95)); backdrop-filter: blur(10px);">
                     <thead>
-                      <tr style="background: linear-gradient(135deg, #FF5722, #ff7043); color: white;">
-                        <th style="padding: 16px 12px; text-align: center; font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">Sr.</th>
-                        <th style="padding: 16px 12px; text-align: left; font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">Item Description</th>
-                        <th style="padding: 16px 12px; text-align: center; font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">Pack Size</th>
-                        <th style="padding: 16px 12px; text-align: center; font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">Nos</th>
-                        <th style="padding: 16px 12px; text-align: center; font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">Total Qty</th>
+                      <tr style="background: linear-gradient(135deg, #2c3e50, #34495e); color: white;">
+                        <th style="padding: 20px 15px; text-align: center; font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px;">Sr. No.</th>
+                        <th style="padding: 20px 15px; text-align: left; font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px;">Item Description</th>
+                        <th style="padding: 20px 15px; text-align: center; font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px;">Pack Size</th>
+                        <th style="padding: 20px 15px; text-align: center; font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px;">Quantity</th>
+                        <th style="padding: 20px 15px; text-align: center; font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px;">Total Qty</th>
                       </tr>
                     </thead>
                     <tbody>
                       ${itemsHTML}
                     </tbody>
                     <tfoot>
-                      <tr style="background: linear-gradient(135deg, #fff3e0, #ffecb3); font-weight: 600;">
-                        <td colspan="4" style="padding: 18px 15px; text-align: right; color: #FF5722; font-size: 16px;">Grand Total:</td>
-                        <td style="padding: 18px 15px; text-align: center; color: #FF5722; font-size: 18px; font-weight: 700;">${totalQuantity}</td>
+                      <tr style="background: linear-gradient(135deg, rgba(231, 76, 60, 0.1), rgba(231, 76, 60, 0.05)); backdrop-filter: blur(10px);">
+                        <td colspan="4" style="padding: 25px 20px; text-align: right; color: #2c3e50; font-size: 18px; font-weight: 700;">Grand Total:</td>
+                        <td style="padding: 25px 20px; text-align: center; color: #e74c3c; font-size: 22px; font-weight: 800; background: linear-gradient(135deg, rgba(231, 76, 60, 0.15), rgba(231, 76, 60, 0.1)); border-radius: 8px;">${totalQuantity}</td>
                       </tr>
                     </tfoot>
                   </table>
@@ -310,39 +337,40 @@ const sendOrderEmail = async (req, res) => {
               </div>
 
               ${deliveryInfo}
+              ${remarksSection}
 
               <!-- Action Required Section -->
-              <div style="background: linear-gradient(135deg, #fff3e0 0%, #ffecb3 100%); padding: 25px; border-radius: 12px; text-align: center; border: 2px solid #ffcc80; position: relative; overflow: hidden;">
-                <div style="position: absolute; top: -20px; right: -20px; background: #FF5722; color: white; border-radius: 50%; width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; font-size: 24px; opacity: 0.1;">⚡</div>
-                <h3 style="color: #FF5722; margin: 0 0 15px 0; font-size: 22px; font-weight: 700;">Action Required</h3>
-                <p style="margin: 0 0 20px 0; font-size: 16px; color: #424242; line-height: 1.6;">
-                  Please confirm receipt of this purchase order and provide your delivery timeline. We appreciate your prompt response.
+              <div style="background: linear-gradient(135deg, rgba(52, 152, 219, 0.1), rgba(52, 152, 219, 0.05)); backdrop-filter: blur(20px); border: 1px solid rgba(52, 152, 219, 0.2); padding: 35px; border-radius: 16px; text-align: center; position: relative; overflow: hidden;">
+                <div style="position: absolute; top: -30px; right: -30px; background: linear-gradient(135deg, rgba(52, 152, 219, 0.1), rgba(52, 152, 219, 0.05)); border-radius: 50%; width: 80px; height: 80px; opacity: 0.3;"></div>
+                <h3 style="color: #2c3e50; margin: 0 0 20px 0; font-size: 26px; font-weight: 800; letter-spacing: -0.5px;">Confirmation Required</h3>
+                <p style="margin: 0 0 25px 0; font-size: 17px; color: #2c3e50; line-height: 1.7; font-weight: 400;">
+                  Please acknowledge receipt of this purchase order and provide your delivery schedule. Your prompt response ensures smooth order processing.
                 </p>
-                <div style="background: #ff5722; background: linear-gradient(135deg, #ff1744, #FF5722); color: white; padding: 12px 20px; border-radius: 25px; display: inline-block; font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; box-shadow: 0 4px 12px rgba(255, 87, 34, 0.3);">
-                  ⏰ Confirm within 24 hours
+                <div style="background: linear-gradient(135deg, #3498db, #2980b9); color: white; padding: 15px 25px; border-radius: 30px; display: inline-block; font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: 0.8px; box-shadow: 0 6px 20px rgba(52, 152, 219, 0.4);">
+                  Response Expected Within 24 Hours
                 </div>
               </div>
 
               <!-- Contact Information -->
-              <div style="margin-top: 30px; padding: 25px; background: linear-gradient(135deg, #f5f5f5, #eeeeee); border-radius: 12px; text-align: center; border: 1px solid #e0e0e0;">
-                <div style="color: #FF5722; font-weight: 600; font-size: 16px; margin-bottom: 10px;">📞 Need Help? Contact Us</div>
-                <div style="color: #666; font-size: 14px; line-height: 1.6;">
-                  <strong>Email:</strong> <a href="mailto:hemanttraders111@yahoo.in" style="color: #FF5722; text-decoration: none;">hemanttraders111@yahoo.in</a><br>
-                  ${contactPerson ? `<strong>Contact:</strong> ${contactPerson}<br>` : ''}
-                  ${phoneNumber ? `<strong>Phone:</strong> ${phoneNumber}` : ''}
+              <div style="margin-top: 30px; padding: 35px; background: linear-gradient(135deg, rgba(149, 165, 166, 0.1), rgba(149, 165, 166, 0.05)); backdrop-filter: blur(20px); border: 1px solid rgba(149, 165, 166, 0.2); border-radius: 16px; text-align: center;">
+                <div style="color: #2c3e50; font-weight: 700; font-size: 18px; margin-bottom: 15px; letter-spacing: -0.3px;">Contact Information</div>
+                <div style="color: #7f8c8d; font-size: 15px; line-height: 1.8; font-weight: 500;">
+                  <strong style="color: #2c3e50;">Email:</strong> <a href="mailto:hemanttraders111@yahoo.in" style="color: #3498db; text-decoration: none; font-weight: 600;">hemanttraders111@yahoo.in</a><br>
+                  ${contactPerson ? `<strong style="color: #2c3e50;">Contact Person:</strong> ${contactPerson}<br>` : ''}
+                  ${phoneNumber ? `<strong style="color: #2c3e50;">Phone:</strong> ${phoneNumber}` : ''}
                 </div>
               </div>
             </div>
 
             <!-- Footer -->
-            <div style="background: linear-gradient(135deg, #424242, #616161); color: white; padding: 25px 30px; text-align: center;">
-              <div style="margin-bottom: 15px;">
-                <div style="font-weight: 700; font-size: 18px; color: #FF5722; margin-bottom: 5px;">Hemant Traders</div>
-                <div style="opacity: 0.8; font-size: 14px;">Your Trusted Business Partner</div>
+            <div style="background: linear-gradient(135deg, #2c3e50, #34495e); color: white; padding: 35px 40px; text-align: center;">
+              <div style="margin-bottom: 20px;">
+                <div style="font-weight: 800; font-size: 22px; color: #ecf0f1; margin-bottom: 8px; letter-spacing: -0.3px;">Hemant Traders</div>
+                <div style="opacity: 0.8; font-size: 15px; font-weight: 500;">Excellence in Business Partnership</div>
               </div>
-              <div style="opacity: 0.6; font-size: 12px; line-height: 1.4;">
+              <div style="opacity: 0.6; font-size: 13px; line-height: 1.6; font-weight: 400;">
                 © ${new Date().getFullYear()} Hemant Traders. All rights reserved.<br>
-                This is an automated message. Please do not reply directly to this email.
+                This is an automated business communication. Please respond via the provided contact details.
               </div>
             </div>
           </div>
