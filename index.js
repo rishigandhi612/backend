@@ -76,7 +76,7 @@ const dashboardRoutes = require('./routes/dashboard.routes');
 app.use('/dashboard', CheckAuth, dashboardRoutes);
 
 const emailRoutes = require("./routes/email.routes.js");
-app.use("/email", emailRoutes); 
+app.use("/email", CheckAuth,emailRoutes); 
 
 const counterRoutes = require("./routes/resetcounter.routes.js");
 app.use("/reset", counterRoutes);
@@ -84,6 +84,10 @@ app.use("/reset", counterRoutes);
 // New inventory routes using PostgreSQL/Supabase
 const inventoryRoutes = require('./routes/inventory.routes');
 app.use('/inventory', CheckAuth, inventoryRoutes);
+
+const transporterRoutes = require('./routes/transporter.routes');
+app.use('/transporter',CheckAuth, transporterRoutes);
+
 
 // Connect to MongoDB database
 connectDatabase();

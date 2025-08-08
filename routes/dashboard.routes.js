@@ -5,17 +5,19 @@ const Customer = require('../models/customer.models'); // Adjust based on your m
 const Product = require('../models/product.models'); // Adjust based on your model structure
 const CustProd = require('../models/cust-prod.models'); // Adjust based on your model structure
 const User = require('../models/user.models'); // Adjust based on your model structure
+const Transporter = require('../models/transport.models'); // Adjust based on your model structure
 const prisma = require('../config/prisma')
 
 // Route to get dashboard statistics
 router.get('/stats', async (req, res) => {
     try {
-        const [customerCount, productCount, custProdCount, userCount, inventoryCount] = await Promise.all([
+        const [customerCount, productCount, custProdCount, userCount, inventoryCount, transporterCount] = await Promise.all([
             Customer.countDocuments(),
             Product.countDocuments(),
             CustProd.countDocuments(),
             User.countDocuments(),
             prisma.inventory.count(), // Prisma query for PostgreSQL
+            Transporter.countDocuments()
         ]);
         const [availableInventory, damagedInventory, reservedInventory] = await Promise.all([
     prisma.inventory.count({ where: { status: 'available' } }),
@@ -30,6 +32,7 @@ router.get('/stats', async (req, res) => {
     totalCustProd: custProdCount,
     totalUsers: userCount,
     totalInventory: inventoryCount,
+    totalTransporters: transporterCount,
     availableInventory,
     damagedInventory,
     reservedInventory,
