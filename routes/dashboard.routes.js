@@ -15,16 +15,16 @@ router.get("/stats", async (req, res) => {
       customerCount,
       productCount,
       custProdCount,
-      userCount,
-      inventoryCount,
       transporterCount,
+      inventoryCount,
+      userCount,
     ] = await Promise.all([
       Customer.countDocuments(),
       Product.countDocuments(),
       CustProd.countDocuments(),
       Transporter.countDocuments(),
       prisma.inventory.count(), // Prisma query for PostgreSQL
-       User.countDocuments(),
+      User.countDocuments(),
     ]);
     const [availableInventory, damagedInventory, reservedInventory] =
       await Promise.all([

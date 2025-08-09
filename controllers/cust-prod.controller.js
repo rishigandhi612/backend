@@ -111,7 +111,7 @@ const getAllCustomerProducts = async (req, res, next) => {
     let response = await CustomerProduct.find(filter)
       .populate("customer")
       .populate("products.product")
-      .populate("transporter") // ✅ Added transporter populate
+      .populate("transporter")
       .sort(sort)
       .skip(skip)
       .limit(itemsPerPage)
@@ -222,9 +222,12 @@ const createCustomerProducts = async (req, res, next) => {
         return res.status(404).json({ success: false, message: `Product with ID ${product._id} not found` });
       }
 
-      if (quantity > ProductInfo.quantity) {
-        return res.status(400).json({ success: false, message: `Insufficient stock for product ${ProductInfo.name}` });
-      }
+      // if (quantity > ProductInfo.quantity) {
+      //   return res.status(400).json({
+      //     success: false,
+      //     message: `Insufficient stock for product ${ProductInfo.name}`,
+      //   });
+      // }
 
       invoiceProducts.push({
         product: product._id,
@@ -254,6 +257,16 @@ const createCustomerProducts = async (req, res, next) => {
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
 
+    // If the counter doesn't exist, set the initial value to 787
+    if (counter.value === 1) {
+      counter = await Counter.findOneAndUpdate(
+        { name: "invoiceNumber" },
+        { value: 1 },
+        { new: true }
+      );
+    }
+
+    // Get current date and format financial year
     const currentDate = new Date();
     let financialYearStart, financialYearEnd;
     if (currentDate.getMonth() < 3) {
@@ -342,11 +355,113 @@ const updateCustomerProducts = async (req, res, next) => {
         return res.status(400).json({ success: false, message: `Transporter with ID ${updatedData.transporter} not found` });
       }
     }
+    // Initialize totalAmount and updatedProducts
+    let totalAmount = 0;
+    const updatedProducts = [];
 
-    // rest of update logic remains same...
-    // (products validation, total calculation, rollId status updates)
+    if (updatedData.products && Array.isArray(updatedData.products)) {
+      for (const productData of updatedData.products) {
+        const { product, width, quantity, unit_price, totalPrice } = productData;
 
-    // ✅ transporter will be saved automatically because we're spreading updatedData
+        // Validate product fields
+        if (width && isNaN(width)) {
+          return res.status(400).json({
+            success: false,
+            message: "Width must be a valid number for each product",
+          });
+        }
+        if (isNaN(quantity) || parseInt(quantity) <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Quantity must be a positive number for each product",
+          });
+        }
+        if (isNaN(unit_price)) {
+          return res.status(400).json({
+            success: false,
+            message: "Unit price must be a number for each product",
+          });
+        }
+        if (isNaN(totalPrice) || parseFloat(totalPrice) <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Total price must be a positive number for each product",
+          });
+        }
+
+        // Add the product details to the updated products list
+        updatedProducts.push({
+          product,
+          width,
+          quantity,
+          unit_price: parseFloat(unit_price),
+          totalPrice: parseFloat(totalPrice),
+        });
+
+        // Update total amount
+        totalAmount += parseFloat(totalPrice);
+      }
+    }
+
+    // Use tax values directly from the request body
+    const otherCharges = parseFloat(updatedData.otherCharges) || 0;
+    const cgstAmount = parseFloat(updatedData.cgst) || 0;
+    const sgstAmount = parseFloat(updatedData.sgst) || 0;
+    const igstAmount = parseFloat(updatedData.igst) || 0;
+
+    // Calculate grand total including all applicable taxes
+    const totalWithOtherCharges = totalAmount + otherCharges;
+    const grandTotal = Math.round(totalWithOtherCharges + cgstAmount + sgstAmount + igstAmount);
+
+    // Prepare updated invoice data
+    const newInvoiceData = {
+      ...updatedData,
+      products: updatedProducts.length > 0 ? updatedProducts : undefined,
+      totalAmount,
+      grandTotal,
+      cgst: cgstAmount,
+      sgst: sgstAmount,
+      igst: igstAmount
+    };
+
+    // Handle roll ID changes
+    const oldRollIds = existingInvoice.rollIds || [];
+    const newRollIds = updatedData.rollIds ? 
+      updatedData.rollIds.map(id => id.trim()).filter(id => id.length > 0) : [];
+
+    // Update the invoice in the database
+    let response = await CustomerProduct.findByIdAndUpdate(pid, newInvoiceData, { new: true });
+
+    if (!response) {
+      return res.status(404).json({
+        success: false,
+        message: "CustomerProduct not found",
+      });
+    }
+
+    // Update inventory status based on roll ID changes
+    try {
+      // Find roll IDs that were removed (mark as available)
+      const removedRollIds = oldRollIds.filter(id => !newRollIds.includes(id));
+      if (removedRollIds.length > 0) {
+        await updateInventoryStatus(removedRollIds, 'available');
+      }
+
+      // Find roll IDs that were added (mark as sold)
+      const addedRollIds = newRollIds.filter(id => !oldRollIds.includes(id));
+      if (addedRollIds.length > 0) {
+        await updateInventoryStatus(addedRollIds, 'sold', existingInvoice.invoiceNumber);
+      }
+    } catch (inventoryError) {
+      console.error('Error updating inventory status during update:', inventoryError);
+      // Continue with the response but log the error
+    }
+
+    res.json({
+      success: true,
+      data: response,
+      message: 'Invoice updated successfully'
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
