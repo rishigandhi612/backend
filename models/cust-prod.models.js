@@ -70,6 +70,11 @@ const InvoiceSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    transporter: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Transporter",
+      required: false,
+    },
   },
   {
     timestamps: true,
