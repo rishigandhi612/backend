@@ -222,12 +222,12 @@ const createCustomerProducts = async (req, res, next) => {
         return res.status(404).json({ success: false, message: `Product with ID ${product._id} not found` });
       }
 
-      // if (quantity > ProductInfo.quantity) {
-      //   return res.status(400).json({
-      //     success: false,
-      //     message: `Insufficient stock for product ${ProductInfo.name}`,
-      //   });
-      // }
+      if (quantity > ProductInfo.quantity) {
+        return res.status(400).json({
+        success: false,
+       message: `Insufficient stock for product ${ProductInfo.name}`,
+        });
+      }
 
       invoiceProducts.push({
         product: product._id,
