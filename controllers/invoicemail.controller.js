@@ -4,29 +4,52 @@ require("dotenv").config();
 
 const sendInvoiceEmail = async (req, res) => {
   try {
-    const { email, invoiceNumber, customerName } = req.body;
+    const { email, invoiceNumber, customerName, subject, message } = req.body;
     const files = req.files;
 
     if (!files || files.length === 0) {
       return res.status(400).json({ message: "At least one file is required" });
     }
 
-    const attachments = files.map((file, index) => ({
+    // Function to sanitize filename by replacing problematic characters
+    const sanitizeFilename = (filename) => {
+      return filename
+        .replace(/\//g, "-") // Replace forward slashes with hyphens
+        .replace(/\\/g, "-") // Replace backslashes with hyphens
+        .replace(/:/g, "-") // Replace colons with hyphens
+        .replace(/\*/g, "") // Remove asterisks
+        .replace(/\?/g, "") // Remove question marks
+        .replace(/"/g, "") // Remove double quotes
+        .replace(/</g, "") // Remove less than
+        .replace(/>/g, "") // Remove greater than
+        .replace(/\|/g, "-") // Replace pipe with hyphen
+        .trim(); // Remove leading/trailing spaces
+    };
+
+    const attachments = files.map((file) => ({
       content: file.buffer.toString("base64"),
-      name: file.originalname || `Invoice_${invoiceNumber}_${index + 1}.pdf`,
+      name: file.originalname || `Accounting Voucher.pdf`,
     }));
 
-    const subject = `Invoice ${invoiceNumber} | Hemant Traders`;
-    const htmlContent = `
-      <h1>Invoice from Hemant Traders</h1>
-      <p>Dear ${customerName},</p>
-      <p>Please find your invoice(s) attached.</p>
-      <p>Thank you for your business!</p>
-    `;
+    // Use provided subject or fallback to default
+    const emailSubject = subject || `Invoice ${invoiceNumber} | Hemant Traders`;
+
+    // Use provided message or fallback to default, convert newlines to HTML
+    const htmlContent = message
+      ? `<div style="white-space: pre-line;">${message.replace(
+          /\n/g,
+          "<br>"
+        )}</div>`
+      : `
+        <p>Invoice from Hemant Traders</p>
+        <p>Dear ${customerName},</p>
+        <p>Please find your invoice(s) attached.</p>
+        <p>Thank you for your business!</p>
+      `;
 
     const response = await sendEmailWithAttachment(
       email,
-      subject,
+      emailSubject,
       htmlContent,
       attachments
     );
