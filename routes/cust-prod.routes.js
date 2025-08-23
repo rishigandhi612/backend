@@ -1,32 +1,43 @@
 const express = require("express");
 const router = express.Router();
 
-//customers
-
-//controllers
-
+// Import the POD controller functions
 const {
-    getAllCustomerProducts,
-    getCustomerProductsbyId,
-    createCustomerProducts,
-    updateCustomerProducts,
-    deleteCustomerProducts,
-} = require("../controllers/cust-prod.controller");
-// Get All customers
+  upload,
+  uploadPOD,
+  getPOD,
+  deletePOD,
+  updateDeliveryStatus,
+  getInvoicesByDeliveryStatus,
+} = require("../controllers/pod.controller"); // Adjust path as needed
+
+// Import your existing customer product controller
+const {
+  getAllCustomerProducts,
+  getCustomerProductsbyId,
+  createCustomerProducts,
+  updateCustomerProducts,
+  deleteCustomerProducts,
+  resetCounter,
+  getAvailableRollIds,
+} = require("../controllers/cust-prod.controller"); // Adjust path as needed
+
+// Existing routes
 router.get("/", getAllCustomerProducts);
-
-//Get customer By Id
 router.get("/:id", getCustomerProductsbyId);
-
-//Create a customer
 router.post("/", createCustomerProducts);
-
-// Update a customer
-
 router.put("/:id", updateCustomerProducts);
-
-// Delete a customer
-
 router.delete("/:id", deleteCustomerProducts);
+router.post("/reset-counter", resetCounter);
+router.get("/available-rolls/:productId", getAvailableRollIds);
+
+// POD related routes
+router.post("/:id/pod", upload.single("podFile"), uploadPOD);
+router.get("/:id/pod", getPOD);
+router.delete("/:id/pod", deletePOD);
+
+// Delivery status routes
+router.put("/:id/delivery-status", updateDeliveryStatus);
+router.get("/delivery-status/:status", getInvoicesByDeliveryStatus);
 
 module.exports = router;

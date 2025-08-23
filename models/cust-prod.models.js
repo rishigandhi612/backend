@@ -75,6 +75,50 @@ const InvoiceSchema = new mongoose.Schema(
       ref: "Transporter",
       required: false,
     },
+    // Proof of Delivery fields
+    pod: {
+      filename: {
+        type: String,
+        required: false,
+      },
+      originalname: {
+        type: String,
+        required: false,
+      },
+      mimetype: {
+        type: String,
+        required: false,
+      },
+      size: {
+        type: Number,
+        required: false,
+      },
+      path: {
+        type: String,
+        required: false,
+      },
+      uploadedAt: {
+        type: Date,
+        required: false,
+      },
+      uploadedBy: {
+        type: String, // or ObjectId if you want to reference a user
+        required: false,
+      },
+    },
+    deliveryStatus: {
+      type: String,
+      enum: ["pending", "in_transit", "delivered", "cancelled"],
+      default: "pending",
+    },
+    deliveredAt: {
+      type: Date,
+      required: false,
+    },
+    deliveryNotes: {
+      type: String,
+      required: false,
+    },
   },
   {
     timestamps: true,
