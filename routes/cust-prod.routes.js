@@ -20,10 +20,14 @@ const {
   deleteCustomerProducts,
   resetCounter,
   getAvailableRollIds,
+  getMonthlyInvoiceTotals,
 } = require("../controllers/cust-prod.controller"); // Adjust path as needed
 
 // Existing routes
 router.get("/", getAllCustomerProducts);
+
+// In your routes file (e.g., customer-product.routes.js)
+router.get("/monthly-totals", getMonthlyInvoiceTotals);
 router.get("/:id", getCustomerProductsbyId);
 router.post("/", createCustomerProducts);
 router.put("/:id", updateCustomerProducts);
@@ -39,5 +43,4 @@ router.delete("/:id/pod", deletePOD);
 // Delivery status routes
 router.put("/:id/delivery-status", updateDeliveryStatus);
 router.get("/delivery-status/:status", getInvoicesByDeliveryStatus);
-
 module.exports = router;
