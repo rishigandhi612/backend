@@ -1,41 +1,294 @@
-const SibApiV3Sdk = require('sib-api-v3-sdk');
-const Counter = require('../models/counter.models'); // Adjust path as needed
+const Counter = require("../models/counter.models"); // Adjust path as needed
+const { jsPDF } = require("jspdf");
+const autoTable = require("jspdf-autotable").default; // Import function
 require("dotenv").config();
 
-const defaultClient = SibApiV3Sdk.ApiClient.instance;
-const apiKey = defaultClient.authentications['api-key'];
-apiKey.apiKey = process.env.BREVO_API_KEY;
-
-const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
-
+const { sendEmailWithAttachment } = require("../services/brevoEmail.service");
 // Function to get next PO number (automatic)
 const getNextPONumber = async () => {
   try {
     const counter = await Counter.findOneAndUpdate(
-      { name: 'purchase_order' },
-      { $inc: { value: 9 } },
-      { 
-        new: true, 
+      { name: "purchase_order" },
+      { $inc: { value: 1 } },
+      {
+        new: true,
         upsert: true,
-        setDefaultsOnInsert: true 
+        setDefaultsOnInsert: true,
       }
     );
-    
+
     // Format PO number with prefix and padding
-    const poNumber = `PO-${String(counter.value).padStart(6, '0')}`;
+    const poNumber = `PO-${String(counter.value).padStart(6, "0")}`;
     return poNumber;
   } catch (error) {
-    console.error('Error generating PO number:', error);
-    throw new Error('Failed to generate PO number');
+    console.error("Error generating PO number:", error);
+    throw new Error("Failed to generate PO number");
   }
 };
 
+// Generate Purchase Order PDF (Invoice Theme) - FIXED VERSION
+async function generatePDF(orderData) {
+  return new Promise((resolve, reject) => {
+    try {
+      // Add logging to debug the data structure
+      console.log(
+        "PDF Generation - Order Data:",
+        JSON.stringify(orderData, null, 2)
+      );
+      console.log("Items:", orderData.items);
+
+      const doc = new jsPDF();
+
+      // const logoPath = path.resolve(__dirname, "../assets/HoloLogo.png");
+      const poNumber = orderData.poNumber || "PO-0001";
+      const currentDate =
+        orderData.currentDate || new Date().toLocaleDateString("en-IN");
+
+      // ---------- HEADER ----------
+      // doc.addImage(logoPath, "PNG", 10, 8, 25, 25);
+
+      doc.setFontSize(28);
+      doc.setFont("helvetica", "bold");
+      doc.text("HEMANT TRADERS", 105, 20, { align: "center" });
+
+      doc.setFontSize(12);
+      doc.setFont("helvetica", "normal");
+      doc.text("1281, Sadashiv Peth, Vertex Arcade, Pune - 411030", 105, 26, {
+        align: "center",
+      });
+      doc.text(
+        "Contact: (+91) 9422080922 / 9420699675    Web: hemanttraders.vercel.app",
+        105,
+        32,
+        { align: "center" }
+      );
+
+      doc.setLineWidth(0.5);
+      doc.line(0, 36, 210, 36);
+
+      doc.setFont("helvetica", "italic");
+      doc.text("Dealers in BOPP, POLYESTER, PVC, THERMAL Films", 105, 42, {
+        align: "center",
+      });
+      doc.text(
+        "Adhesives for Lamination, Bookbinding, and Pasting, UV Coats",
+        105,
+        48,
+        { align: "center" }
+      );
+
+      doc.line(0, 51, 210, 51);
+
+      // Title Line
+      doc.setFontSize(12);
+      doc.setFont("helvetica", "bold");
+      doc.text(`PURCHASE ORDER #${poNumber}`, 14, 60);
+      doc.setFont("helvetica", "normal");
+      doc.text(`Date: ${currentDate}`, 200, 60, { align: "right" });
+
+      // ---------- SUPPLIER DETAILS ----------
+      let yPos = 75;
+      doc.setFontSize(11);
+      doc.setFont("helvetica", "bold");
+      doc.text("Supplier:", 14, yPos);
+
+      doc.setFont("helvetica", "normal");
+      yPos += 6;
+
+      // Debug logging for supplier name
+      console.log("Supplier Name:", orderData.supplierName);
+      const supplierName = orderData.supplierName || "Supplier Name";
+      doc.text(supplierName, 14, yPos);
+      yPos += 5;
+
+      // Add delivery information if available
+      console.log("Delivery Type:", orderData.deliveryType);
+      if (orderData.deliveryType) {
+        doc.text(`Delivery Type: ${orderData.deliveryType}`, 14, yPos);
+        yPos += 5;
+      }
+      if (orderData.thirdPartyCustomer) {
+        doc.text(
+          `Third Party Customer: ${orderData.thirdPartyCustomer}`,
+          14,
+          yPos
+        );
+        yPos += 5;
+      }
+      if (orderData.contactPerson) {
+        doc.text(`Contact: ${orderData.contactPerson}`, 14, yPos);
+        yPos += 5;
+      }
+      if (orderData.phoneNumber) {
+        doc.text(`Phone: ${orderData.phoneNumber}`, 14, yPos);
+        yPos += 5;
+      }
+      if (orderData.expectedDeliveryDate) {
+        doc.text(
+          `Expected Delivery: ${orderData.expectedDeliveryDate}`,
+          14,
+          yPos
+        );
+        yPos += 5;
+      }
+
+      // ---------- TABLE ----------
+      yPos += 10;
+      const tableColumns = [
+        "Sr.",
+        "Item Name",
+        "Pack Size",
+        "Units",
+        "Qty",
+        // "Rate",
+        // "Amount",
+      ];
+      const tableRows = [];
+
+      // let totalAmount = 0;
+
+      console.log("Processing items for PDF:", orderData.items);
+
+      orderData.items.forEach((item, index) => {
+        console.log(`Item ${index + 1}:`, item);
+
+        // Handle your actual data structure
+        const quantity = item.totalQty || item.quantity || item.qty || 0;
+        // const rate = item.rate || item.price || 0; // You're missing rate in your data
+        // const amount = quantity * rate;
+        // totalAmount += amount;
+
+        // Use 'name' field which is what your frontend sends
+        const itemName =
+          item.name ||
+          item.itemName ||
+          item.description ||
+          item.product ||
+          "N/A";
+        const packSize = item.packSize;
+        const units = item.nos || "N/A";
+        // console.log(
+        //   `Processed - Name: ${itemName}, Qty: ${quantity}, Rate: ${rate}, Amount: ${amount}`
+        // );
+
+        tableRows.push([
+          index + 1,
+          itemName,
+          packSize,
+          units,
+          quantity,
+          // rate > 0 ? rate.toFixed(2) : "TBD", // Show "TBD" if no rate
+          // amount > 0 ? amount.toFixed(2) : "TBD", // Show "TBD" if no amount
+        ]);
+      });
+
+      // Summary Row - only show total if we have rates
+      // if (totalAmount > 0) {
+      //   tableRows.push(["", "", "", "", "Total", totalAmount.toFixed(2)]);
+      // } else {
+      //   tableRows.push(["", "", "", "", "Total", "TBD"]);
+      // }
+
+      autoTable(doc, {
+        head: [["Sr.", "Item Name", "Pack Size", "Units", "Quantity"]],
+        body: tableRows,
+        startY: yPos,
+        theme: "grid",
+
+        // Base styles
+        styles: {
+          font: "helvetica",
+          fontSize: 9,
+          cellPadding: 4,
+          lineWidth: 0.1,
+          lineColor: [220, 220, 220], // subtle grid lines
+          valign: "middle",
+        },
+
+        // Header styling
+        headStyles: {
+          fillColor: [30, 45, 70], // deep navy
+          textColor: [255, 255, 255],
+          fontSize: 11,
+          fontStyle: "bold",
+          halign: "center",
+          valign: "middle",
+        },
+
+        // Body styling
+        bodyStyles: {
+          textColor: [40, 40, 40],
+          fontSize: 9,
+        },
+
+        // Alternate rows
+        alternateRowStyles: {
+          fillColor: [248, 248, 248], // very light gray for zebra
+        },
+
+        // Column alignment
+        columnStyles: {
+          0: { halign: "center", cellWidth: 20 }, // Sr.
+          1: { halign: "center", cellWidth: 60 }, // Item Name
+          2: { halign: "center", cellWidth: 30 }, // Pack Size
+          3: { halign: "center", cellWidth: 35 }, // Units
+          4: { halign: "center", cellWidth: 35 }, // Quantity
+        },
+
+        // Special styling for last row (totals)
+        didParseCell: function (data) {
+          if (
+            data.row.section === "body" &&
+            data.row.index === tableRows.length - 1
+          ) {
+            data.cell.styles.fillColor = [230, 235, 240]; // steel gray background
+            data.cell.styles.fontStyle = "bold";
+            data.cell.styles.textColor = [20, 20, 20];
+          }
+        },
+      });
+
+      let finalY = doc.lastAutoTable.finalY + 10;
+
+      // ---------- REMARKS ----------
+      if (orderData.remarks) {
+        doc.setFont("helvetica", "bold");
+        doc.text("Remarks:", 14, finalY);
+        doc.setFont("helvetica", "normal");
+        doc.setFillColor(240, 240, 240);
+        doc.rect(14, finalY + 2, 182, 10, "F");
+        doc.text(orderData.remarks, 16, finalY + 9);
+        finalY += 20;
+      }
+
+      // ---------- FOOTER ----------
+      doc.setLineWidth(0.5);
+      doc.line(0, 277, 210, 277);
+
+      doc.setFont("helvetica", "normal");
+      doc.text(
+        "This is a computer-generated document and does not require a physical signature.",
+        14,
+        289
+      );
+
+      doc.setFont("helvetica", "bold");
+      doc.text(`GSTIN: ${orderData.gstNumber || "27AAVPG7824M1ZX"}`, 14, 284);
+
+      const pdfBuffer = Buffer.from(doc.output("arraybuffer"));
+      resolve(pdfBuffer);
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
 const sendOrderEmail = async (req, res) => {
   try {
-    const { 
-      email, 
-      supplierName, 
-      items, 
+    const {
+      email,
+      supplierName,
+      items,
       orderDate,
       deliveryType,
       thirdPartyCustomer,
@@ -44,408 +297,208 @@ const sendOrderEmail = async (req, res) => {
       expectedDeliveryDate,
       remarks,
     } = req.body;
-   let companyName = req.body.companyName || 'HEMANT TRADERS';
-    let gstNumber = req.body.gstNumber || '27AAVPG7824M1ZX';
+    let companyName = req.body.companyName || "HEMANT TRADERS";
+    let gstNumber = req.body.gstNumber || "27AAVPG7824M1ZX";
+
+    // Debug the incoming request
+    console.log("=== DEBUG: Incoming Request Body ===");
+    console.log("Full request body:", JSON.stringify(req.body, null, 2));
+    console.log("Email:", email);
+    console.log("Supplier Name:", supplierName);
+    console.log("Items:", JSON.stringify(items, null, 2));
+    console.log("Order Date:", orderDate);
+    console.log("Delivery Type:", deliveryType);
+    console.log("Expected Delivery Date:", expectedDeliveryDate);
+    console.log("Remarks:", remarks);
+    console.log("=======================");
+
     // Validate required fields
-    if (!email || !supplierName || !items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ 
-        message: "Missing required fields: email, supplierName, items" 
+    if (
+      !email ||
+      !supplierName ||
+      !items ||
+      !Array.isArray(items) ||
+      items.length === 0
+    ) {
+      return res.status(400).json({
+        message: "Missing required fields: email, supplierName, items",
+        receivedData: {
+          email: !!email,
+          supplierName: !!supplierName,
+          items: items
+            ? `Array with ${items.length} items`
+            : "Missing or not array",
+        },
       });
+    }
+
+    // More flexible item validation
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      console.log(`Validating item ${i + 1}:`, item);
     }
 
     // Always generate PO number automatically
     const poNumber = await getNextPONumber();
 
-    // Calculate totals
+    // Calculate totals with better field handling
     const totalItems = items.length;
-    const totalQuantity = items.reduce((sum, item) => sum + (item.totalQty || 0), 0);
+    const totalQuantity = items.reduce((sum, item) => {
+      const qty = item.totalQty || item.quantity || item.qty || 0;
+      console.log(`Item quantity: ${qty}`);
+      return sum + qty;
+    }, 0);
 
-    // Generate items HTML with email-safe styling
-    const itemsHTML = items.map((item, index) => `
-      <tr style="border-bottom: 1px solid #ddd;">
-        <td style="padding: 12px 8px; text-align: center; font-weight: bold; color: #333; font-size: 14px; background-color: #f8f9fa;">${index + 1}</td>
-        <td style="padding: 12px 8px; text-align: left; color: #333; background-color: #ffffff;">
-          <div style="font-weight: bold; margin-bottom: 4px; font-size: 15px; color: #2c3e50;">${item.name}</div>
-          ${item.description ? `<div style="font-size: 13px; color: #666; line-height: 1.4;">${item.description}</div>` : ''}
-        </td>
-        <td style="padding: 12px 8px; text-align: center; color: #333; font-weight: 500; font-size: 14px; background-color: #f8f9fa;">${item.packSize || '-'}</td>
-        <td style="padding: 12px 8px; text-align: center; color: #333; font-weight: 500; font-size: 14px; background-color: #ffffff;">${item.nos || 0}</td>
-        <td style="padding: 12px 8px; text-align: center; color: #e67e22; font-weight: bold; font-size: 16px; background-color: #fff3cd;">${item.totalQty || 0}</td>
-      </tr>
-    `).join('');
+    console.log(
+      "Calculated totals - Items:",
+      totalItems,
+      "Total Quantity:",
+      totalQuantity
+    );
 
-    const currentDate = orderDate || new Date().toLocaleDateString('en-IN');
+    const currentDate = orderDate || new Date().toLocaleDateString("en-IN");
 
-    // Professional third-party delivery information
-    let deliveryInfo = '';
-    if (deliveryType === 'THIRD_PARTY_DELIVERY' && thirdPartyCustomer) {
-      deliveryInfo = `
-        <table style="width: 100%; margin-bottom: 25px; border: 2px solid #e67e22; border-radius: 8px; background-color: #fff;">
-          <tr>
-            <td style="padding: 20px;">
-              <div style="border-left: 4px solid #e67e22; padding-left: 15px; margin-bottom: 15px;">
-                <h3 style="color: #2c3e50; margin: 0 0 8px 0; font-size: 18px; font-weight: bold;">Third Party Delivery</h3>
-                <p style="color: #666; margin: 0; font-size: 14px;">Delivery to be made in the name of the customer</p>
-              </div>
-              <table style="width: 100%; background-color: #fef9e7; border: 1px solid #f39c12; border-radius: 6px;">
-                <tr>
-                  <td style="padding: 15px;">
-                    <table style="width: 100%;">
-                      <tr>
-                        <td style="width: 50%; vertical-align: top;">
-                          <div style="color: #e67e22; font-weight: bold; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Customer Name</div>
-                          <div style="color: #2c3e50; font-weight: bold; font-size: 16px;">${thirdPartyCustomer.name}</div>
-                        </td>
-                        <td style="width: 50%; vertical-align: top;">
-                          <div style="color: #e67e22; font-weight: bold; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Delivery City</div>
-                          <div style="color: #2c3e50; font-weight: bold; font-size: 16px;">${thirdPartyCustomer.address?.city || 'Not specified'}</div>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-      `;
-    }
+    // Prepare data for PDF generation
+    const orderData = {
+      poNumber,
+      supplierName,
+      items,
+      currentDate,
+      expectedDeliveryDate,
+      deliveryType,
+      thirdPartyCustomer,
+      contactPerson,
+      phoneNumber,
+      remarks,
+      companyName,
+      gstNumber,
+      totalItems,
+      totalQuantity,
+    };
 
-    // Remarks section
-    let remarksSection = '';
-    if (remarks && remarks.trim()) {
-      remarksSection = `
-        <table style="width: 100%; margin-bottom: 25px; border: 2px solid #e67e22; border-radius: 8px; background-color: #fff;">
-          <tr>
-            <td style="padding: 20px;">
-              <div style="border-left: 4px solid #e67e22; padding-left: 15px; margin-bottom: 15px;">
-                <h3 style="color: #2c3e50; margin: 0 0 8px 0; font-size: 18px; font-weight: bold;">Special Instructions</h3>
-                <p style="color: #666; margin: 0; font-size: 14px;">Please note the following requirements</p>
-              </div>
-              <div style="background-color: #fef9e7; border: 1px solid #f39c12; border-radius: 6px; padding: 15px;">
-                <div style="color: #2c3e50; font-size: 15px; line-height: 1.6; font-weight: 500;">${remarks}</div>
-              </div>
-            </td>
-          </tr>
-        </table>
-      `;
-    }
+    // Add detailed logging before PDF generation
+    console.log("=== DEBUG: Order Data for PDF ===");
+    console.log("PO Number:", poNumber);
+    console.log("Supplier Name:", supplierName);
+    console.log("Items Count:", items ? items.length : 0);
+    console.log("Items:", JSON.stringify(items, null, 2));
+    console.log("Current Date:", currentDate);
+    console.log("Delivery Type:", deliveryType);
+    console.log("Contact Person:", contactPerson);
+    console.log("Phone Number:", phoneNumber);
+    console.log("Remarks:", remarks);
+    console.log("=======================");
 
-    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
+    // Generate PDF
+    const pdfBuffer = await generatePDF(orderData);
+    const pdfBase64 = Buffer.from(pdfBuffer).toString("base64");
 
-    sendSmtpEmail.subject = `Purchase Order - ${poNumber} | Hemant Traders`;
-    sendSmtpEmail.to = [{ email: email, name: supplierName }];
-    sendSmtpEmail.sender = { name: "Hemant Traders Purchase Order", email: "rishigandhi021@gmail.com" };
-    
-    sendSmtpEmail.textContent = `
-        Dear ${supplierName},
-        
-        Greetings from Hemant Traders!
-        
-        Please find our purchase order details below:
-        
-        Purchase Order Number: ${poNumber}
-        Order Date: ${currentDate}
-        ${expectedDeliveryDate ? `Expected Delivery: ${expectedDeliveryDate}` : ''}
-        Delivery Type: ${deliveryType === 'NORMAL_DELIVERY' ? 'Normal Delivery' : 'Third Party Delivery'}
-        
-        Items Required:
-        ${items.map((item, index) => `${index + 1}. ${item.name} - Pack Size: ${item.packSize || 'N/A'}, Nos: ${item.nos || 0}, Total Qty: ${item.totalQty || 0}`).join('\n')}
-        
-        Summary:
-        - Total Items: ${totalItems}
-        - Total Quantity: ${totalQuantity}
-        
-        ${companyName ? `Company: ${companyName}` : ''}
-        ${gstNumber ? `GST: ${gstNumber}` : ''}
-        
-        ${remarks ? `Special Instructions: ${remarks}` : ''}
-        
-        Please confirm receipt and provide delivery timeline within 24 hours.
-        
-        Best regards,
-        Hemant Traders
-        Address: 1281, Vertex Arcade, Sadashiv Peth, Pune, Maharashtra 411030
-        ${contactPerson ? `Contact: ${contactPerson}` : ''}
-        ${phoneNumber ? `Phone: ${phoneNumber}` : ''}
-        Email: hemanttraders111@yahoo.in
-      `;
+    // Prepare email subject and HTML content
+    const subject = `Purchase Order - ${poNumber} | Hemant Traders`;
 
-    sendSmtpEmail.htmlContent = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Purchase Order - ${poNumber}</title>
-        </head>
-        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 20px; background-color: #f4f4f4;">
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Purchase Order - ${poNumber}</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 20px; background-color: #f4f4f4;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
           
-          <!-- Main Container -->
-          <table style="max-width: 700px; margin: 0 auto; background-color: #ffffff; border: 1px solid #ddd; border-radius: 10px; overflow: hidden;">
+          <!-- Header -->
+          <div style="background-color: #e67e22; color: #ffffff; padding: 30px; text-align: center;">
+            <h1 style="margin: 0; font-size: 28px;">Purchase Order</h1>
+            <div style="margin: 15px 0; background-color: #2c3e50; padding: 8px 20px; border-radius: 20px; display: inline-block;">
+              <strong>${poNumber}</strong>
+            </div>
+          </div>
+
+          <!-- Content -->
+          <div style="padding: 30px;">
+            <h2 style="color: #2c3e50; margin-bottom: 20px;">Dear ${supplierName},</h2>
             
-            <!-- Header Section -->
-            <tr>
-              <td style="background-color: #e67e22; color: #ffffff; padding: 30px; text-align: center;">
-                <h1 style="margin: 0; font-size: 32px; font-weight: bold;">Purchase Order</h1>
-                <div style="margin: 15px 0;">
-                  <div style="background-color: #2c3e50; color: #ffffff; padding: 10px 20px; border-radius: 25px; font-size: 14px; font-weight: bold; text-transform: uppercase; display: inline-block;">${poNumber}</div>
-                </div>
-                <p style="margin: 15px 0 0 0; font-size: 16px; opacity: 0.9;">Professional Procurement Request</p>
-              </td>
-            </tr>
+            <p style="margin-bottom: 20px; font-size: 16px;">
+              Greetings from Hemant Traders! Please find our purchase order attached as a PDF document.
+            </p>
 
-            <!-- Main Content -->
-            <tr>
-              <td style="padding: 30px;">
+            <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
+              <h3 style="color: #2c3e50; margin-bottom: 15px;">Order Summary:</h3>
+              <ul style="list-style: none; padding: 0; margin: 0;">
+                <li style="margin-bottom: 8px;"><strong>PO Number:</strong> ${poNumber}</li>
+                <li style="margin-bottom: 8px;"><strong>Order Date:</strong> ${currentDate}</li>
+                <li style="margin-bottom: 8px;"><strong>Total Items:</strong> ${totalItems}</li>
+                <li style="margin-bottom: 8px;"><strong>Total Quantity:</strong> ${totalQuantity}</li>
+                ${
+                  expectedDeliveryDate
+                    ? `<li style="margin-bottom: 8px;"><strong>Expected Delivery:</strong> ${expectedDeliveryDate}</li>`
+                    : ""
+                }
+              </ul>
+            </div>
 
-                <!-- Greeting Section -->
-                <table style="width: 100%; margin-bottom: 25px; background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px;">
-                  <tr>
-                    <td style="padding: 25px;">
-                      <div style="border-left: 4px solid #e67e22; padding-left: 20px; margin-bottom: 20px;">
-                        <h2 style="color: #2c3e50; margin: 0 0 8px 0; font-size: 24px; font-weight: bold;">Dear ${supplierName},</h2>
-                        <p style="margin: 0; color: #666; font-size: 14px;">We value our partnership and appreciate your continued service excellence</p>
-                      </div>
-                      <p style="font-size: 16px; margin: 0; color: #2c3e50; line-height: 1.6;">
-                        Please review the detailed purchase order specifications below. We request your prompt confirmation along with the proposed delivery schedule.
-                      </p>
-                    </td>
-                  </tr>
-                </table>
-       
-                <!-- Billing Details Section -->
-                ${companyName || gstNumber ? `
-                <table style="width: 100%; margin-bottom: 25px; background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px;">
-                  <tr>
-                    <td style="padding: 25px;">
-                      <div style="border-left: 4px solid #e67e22; padding-left: 20px; margin-bottom: 20px;">
-                        <h3 style="color: #2c3e50; margin: 0 0 8px 0; font-size: 20px; font-weight: bold;">Billing Information</h3>
-                        <p style="color: #666; margin: 0; font-size: 14px;">Company details and tax information</p>
-                      </div>
-                      
-                      <table style="width: 100%; background-color: #fff3cd; border: 1px solid #ffeaa7; border-radius: 6px;">
-                        <tr>
-                          <td style="padding: 20px;">
-                            <table style="width: 100%;">
-                              <tr>
-                                ${companyName ? `
-                                <td style="width: 50%; vertical-align: top; padding-right: 15px;">
-                                  <div style="color: #e67e22; font-weight: bold; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Company Name</div>
-                                  <div style="color: #2c3e50; font-weight: bold; font-size: 16px;">${companyName}</div>
-                                </td>
-                                ` : ''}
-                                ${gstNumber ? `
-                                <td style="width: 50%; vertical-align: top;">
-                                  <div style="color: #e67e22; font-weight: bold; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">GST Number</div>
-                                  <div style="color: #2c3e50; font-weight: bold; font-size: 16px;">${gstNumber}</div>
-                                </td>
-                                ` : ''}
-                              </tr>
-                              <tr>
-                                <td colspan="2" style="padding-top: 15px;">
-                                  <div style="color: #e67e22; font-weight: bold; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Business Address</div>
-                                  <div style="color: #2c3e50; font-weight: bold; font-size: 14px; line-height: 1.5;">1281, Vertex Arcade, Sadashiv Peth, Pune, Maharashtra 411030</div>
-                                </td>
-                              </tr>
-                            </table>
-                          </td>
-                        </tr>
-                      </table>
-                    </td>
-                  </tr>
-                </table>
-                ` : ''}
+            <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; border-radius: 8px; padding: 20px; text-align: center;">
+              <h3 style="color: #2c3e50; margin-bottom: 15px;">Action Required</h3>
+              <p style="margin: 0; color: #2c3e50;">
+                Please review the attached purchase order and confirm receipt along with your delivery timeline within 24 hours.
+              </p>
+            </div>
+          </div>
 
-                <!-- Order Details Section -->
-                <table style="width: 100%; margin-bottom: 25px; background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px;">
-                  <tr>
-                    <td style="padding: 25px;">
-                      <div style="border-left: 4px solid #e67e22; padding-left: 20px; margin-bottom: 20px;">
-                        <h3 style="color: #2c3e50; margin: 0 0 8px 0; font-size: 20px; font-weight: bold;">Order Information</h3>
-                        <p style="color: #666; margin: 0; font-size: 14px;">Complete order details and specifications</p>
-                      </div>
-                      
-                      <table style="width: 100%; background-color: #fff3cd; border: 1px solid #ffeaa7; border-radius: 6px;">
-                        <tr>
-                          <td style="padding: 20px;">
-                            <table style="width: 100%;">
-                              <tr>
-                                <td style="width: 50%; vertical-align: top; padding: 0 10px 15px 0;">
-                                  <div style="color: #e67e22; font-weight: bold; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Purchase Order Number</div>
-                                  <div style="color: #2c3e50; font-weight: bold; font-size: 16px;">${poNumber}</div>
-                                </td>
-                                <td style="width: 50%; vertical-align: top; padding: 0 0 15px 10px;">
-                                  <div style="color: #e67e22; font-weight: bold; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Order Date</div>
-                                  <div style="color: #2c3e50; font-weight: bold; font-size: 16px;">${currentDate}</div>
-                                </td>
-                              </tr>
-                              ${expectedDeliveryDate ? `
-                              <tr>
-                                <td style="width: 50%; vertical-align: top; padding: 0 10px 15px 0;">
-                                  <div style="color: #e67e22; font-weight: bold; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Expected Delivery</div>
-                                  <div style="color: #2c3e50; font-weight: bold; font-size: 16px;">${expectedDeliveryDate}</div>
-                                </td>
-                                <td style="width: 50%; vertical-align: top; padding: 0 0 15px 10px;">
-                                  <div style="color: #e67e22; font-weight: bold; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Delivery Type</div>
-                                  <div style="color: #2c3e50; font-weight: bold; font-size: 16px;">${deliveryType === 'NORMAL_DELIVERY' ? 'Standard Delivery' : 'Third Party Delivery'}</div>
-                                </td>
-                              </tr>
-                              ` : `
-                              <tr>
-                                <td colspan="2" style="padding: 0 0 15px 0;">
-                                  <div style="color: #e67e22; font-weight: bold; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Delivery Type</div>
-                                  <div style="color: #2c3e50; font-weight: bold; font-size: 16px;">${deliveryType === 'NORMAL_DELIVERY' ? 'Standard Delivery' : 'Third Party Delivery'}</div>
-                                </td>
-                              </tr>
-                              `}
-                              ${contactPerson || phoneNumber ? `
-                              <tr>
-                                ${contactPerson ? `
-                                <td style="width: 50%; vertical-align: top; padding: 0 10px 0 0;">
-                                  <div style="color: #e67e22; font-weight: bold; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Contact Person</div>
-                                  <div style="color: #2c3e50; font-weight: bold; font-size: 16px;">${contactPerson}</div>
-                                </td>
-                                ` : '<td style="width: 50%;"></td>'}
-                                ${phoneNumber ? `
-                                <td style="width: 50%; vertical-align: top; padding: 0 0 0 10px;">
-                                  <div style="color: #e67e22; font-weight: bold; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Contact Number</div>
-                                  <div style="color: #2c3e50; font-weight: bold; font-size: 16px;">${phoneNumber}</div>
-                                </td>
-                                ` : '<td style="width: 50%;"></td>'}
-                              </tr>
-                              ` : ''}
-                            </table>
-                          </td>
-                        </tr>
-                      </table>
-                    </td>
-                  </tr>
-                </table>
+          <!-- Footer -->
+          <div style="background-color: #2c3e50; color: #ffffff; padding: 25px; text-align: center;">
+            <div style="margin-bottom: 15px;">
+              <strong style="font-size: 18px;">Hemant Traders</strong><br>
+              <span style="opacity: 0.8;">1281, Vertex Arcade, Sadashiv Peth, Pune, Maharashtra 411030</span>
+            </div>
+            <div style="opacity: 0.7; font-size: 14px;">
+              Email: hemanttraders111@yahoo.in<br>
+              ${contactPerson ? `Contact: ${contactPerson}<br>` : ""}
+              ${phoneNumber ? `Phone: ${phoneNumber}` : ""}
+            </div>
+          </div>
 
-                <!-- Items Section -->
-                <table style="width: 100%; margin-bottom: 25px; background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px;">
-                  <tr>
-                    <td style="padding: 25px;">
-                      <table style="width: 100%; margin-bottom: 20px;">
-                        <tr>
-                          <td style="border-left: 4px solid #27ae60; padding-left: 20px;">
-                            <h3 style="color: #2c3e50; margin: 0 0 8px 0; font-size: 20px; font-weight: bold;">Items Required</h3>
-                            <p style="color: #666; margin: 0; font-size: 14px;">Detailed item specifications and quantities</p>
-                          </td>
-                          <td style="text-align: right; vertical-align: top;">
-                            <div style="background-color: #27ae60; color: #ffffff; padding: 6px 15px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-bottom: 5px; display: inline-block;">${totalItems} Items</div>
-                            <div style="color: #666; font-size: 12px; font-weight: bold;">Total Quantity: ${totalQuantity}</div>
-                          </td>
-                        </tr>
-                      </table>
-                      
-                      <table style="width: 100%; border-collapse: collapse; background-color: #ffffff; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
-                        <thead>
-                          <tr style="background-color: #2c3e50; color: #ffffff;">
-                            <th style="padding: 15px 8px; text-align: center; font-weight: bold; font-size: 13px;">Sr. No.</th>
-                            <th style="padding: 15px 8px; text-align: left; font-weight: bold; font-size: 13px;">Item Description</th>
-                            <th style="padding: 15px 8px; text-align: center; font-weight: bold; font-size: 13px;">Pack Size</th>
-                            <th style="padding: 15px 8px; text-align: center; font-weight: bold; font-size: 13px;">Quantity</th>
-                            <th style="padding: 15px 8px; text-align: center; font-weight: bold; font-size: 13px;">Total Qty</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          ${itemsHTML}
-                        </tbody>
-                        <tfoot>
-                          <tr style="background-color: #f8f9fa; border-top: 2px solid #e67e22;">
-                            <td colspan="4" style="padding: 20px 15px; text-align: right; color: #2c3e50; font-size: 16px; font-weight: bold;">Grand Total:</td>
-                            <td style="padding: 20px 15px; text-align: center; color: #e74c3c; font-size: 18px; font-weight: bold; background-color: #fff3cd;">${totalQuantity} Kg</td>
-                          </tr>
-                        </tfoot>
-                      </table>
-                    </td>
-                  </tr>
-                </table>
+        </div>
+      </body>
+      </html>
+    `;
 
-                ${deliveryInfo}
-                ${remarksSection}
+    // Prepare attachment
+    const attachments = [
+      {
+        content: pdfBase64,
+        name: `PurchaseOrder_${poNumber}.pdf`,
+        contentType: "application/pdf",
+      },
+    ];
 
-                <!-- Action Required Section -->
-                <table style="width: 100%; margin-bottom: 25px; background-color: #fff3cd; border: 2px solid #e67e22; border-radius: 8px;">
-                  <tr>
-                    <td style="padding: 30px; text-align: center;">
-                      <h3 style="color: #2c3e50; margin: 0 0 15px 0; font-size: 22px; font-weight: bold;">Confirmation Required</h3>
-                      <p style="margin: 0 0 20px 0; font-size: 16px; color: #2c3e50; line-height: 1.6;">
-                        Please acknowledge receipt of this purchase order and provide your delivery schedule. Your prompt response ensures smooth order processing.
-                      </p>
-                      <div style="background-color: #e67e22; color: #ffffff; padding: 12px 25px; border-radius: 25px; display: inline-block; font-weight: bold; font-size: 14px; text-transform: uppercase;">
-                        Response Expected Within 24 Hours
-                      </div>
-                    </td>
-                  </tr>
-                </table>
+    // Use your existing email service
+    await sendEmailWithAttachment(email, subject, htmlContent, attachments);
 
-                <!-- Contact Information -->
-                <table style="width: 100%; background-color: #e9ecef; border: 1px solid #ced4da; border-radius: 8px;">
-                  <tr>
-                    <td style="padding: 25px; text-align: center;">
-                      <div style="color: #2c3e50; font-weight: bold; font-size: 18px; margin-bottom: 15px;">Contact Information</div>
-                      <div style="color: #495057; font-size: 15px; line-height: 1.8;">
-                        <strong style="color: #2c3e50;">Email:</strong> <a href="mailto:hemanttraders111@yahoo.in" style="color: #e67e22; text-decoration: none; font-weight: bold;">hemanttraders111@yahoo.in</a><br>
-                        <strong style="color: #2c3e50;">Address:</strong> 1281, Vertex Arcade, Sadashiv Peth, Pune, Maharashtra 411030<br>
-                        ${contactPerson ? `<strong style="color: #2c3e50;">Contact Person:</strong> ${contactPerson}<br>` : ''}
-                        ${phoneNumber ? `<strong style="color: #2c3e50;">Phone:</strong> ${phoneNumber}` : ''}
-                      </div>
-                    </td>
-                  </tr>
-                </table>
-
-              </td>
-            </tr>
-
-            <!-- Footer -->
-            <tr>
-              <td style="background-color: #2c3e50; color: #ffffff; padding: 25px; text-align: center;">
-                <div style="margin-bottom: 15px;">
-                  <div style="font-weight: bold; font-size: 20px; margin-bottom: 5px;">Hemant Traders</div>
-                  <div style="opacity: 0.8; font-size: 14px;">1281, Shop No.5, Vertex Arcade, Sadashiv Peth, Pune, Maharashtra 411030.</div>
-                </div>
-                <div style="opacity: 0.7; font-size: 12px; line-height: 1.5;">
-                  © ${new Date().getFullYear()} Hemant Traders. All rights reserved.<br>
-                  This is an automated business communication. Please respond via the provided contact details.
-                </div>
-              </td>
-            </tr>
-
-          </table>
-        </body>
-        </html>
-      `;
-
-    await apiInstance.sendTransacEmail(sendSmtpEmail);
-    
-    res.status(200).json({ 
+    res.status(200).json({
       success: true,
-      message: "Purchase order sent successfully!",
+      message: "Purchase order sent successfully with PDF attachment!",
       poNumber: poNumber,
       totalItems: totalItems,
-      totalQuantity: totalQuantity
+      totalQuantity: totalQuantity,
     });
-
   } catch (error) {
     console.error("Error:", error);
-    
+
     // Handle specific Brevo errors
     if (error.response) {
       console.error("Brevo Response Error:", error.response.text);
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
         message: "Email service error",
-        error: error.response.text || "Invalid email configuration"
+        error: error.response.text || "Invalid email configuration",
       });
     }
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
       success: false,
       message: "Failed to send purchase order",
-      error: error.message 
+      error: error.message,
     });
   }
 };
@@ -453,20 +506,20 @@ const sendOrderEmail = async (req, res) => {
 // Optional: Function to get current counter value
 const getCurrentPONumber = async (req, res) => {
   try {
-    const counter = await Counter.findOne({ name: 'purchase_order' });
+    const counter = await Counter.findOne({ name: "purchase_order" });
     const currentValue = counter ? counter.value : 0;
-    const nextPONumber = `PO-${String(currentValue + 9).padStart(6, '0')}`;
-    
+    const nextPONumber = `PO-${String(currentValue + 1).padStart(6, "0")}`;
+
     res.status(200).json({
       success: true,
       currentValue,
-      nextPONumber
+      nextPONumber,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
       message: "Failed to get PO number",
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -475,23 +528,74 @@ const getCurrentPONumber = async (req, res) => {
 const resetPOCounter = async (req, res) => {
   try {
     const { startValue = 0 } = req.body;
-    
+
     await Counter.findOneAndUpdate(
-      { name: 'purchase_order' },
+      { name: "purchase_order" },
       { value: startValue },
       { upsert: true }
     );
-    
+
     res.status(200).json({
       success: true,
       message: `PO counter reset to ${startValue}`,
-      value: startValue
+      value: startValue,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
       message: "Failed to reset PO counter",
-      error: error.message
+      error: error.message,
+    });
+  }
+};
+
+// Debug function to test PDF generation without sending email
+const testPDFGeneration = async (req, res) => {
+  try {
+    console.log("=== TEST PDF GENERATION ===");
+    console.log("Request body:", JSON.stringify(req.body, null, 2));
+
+    const testData = {
+      poNumber: "PO-TEST001",
+      supplierName: req.body.supplierName || "Test Supplier",
+      items: req.body.items || [
+        {
+          itemName: "Test Item 1",
+          totalQty: 10,
+          rate: 100,
+          packSize: "1234",
+        },
+        {
+          itemName: "Test Item 2",
+          totalQty: 5,
+          rate: 200,
+          packSize: "5678",
+        },
+      ],
+      currentDate: new Date().toLocaleDateString("en-IN"),
+      expectedDeliveryDate: req.body.expectedDeliveryDate,
+      deliveryType: req.body.deliveryType,
+      thirdPartyCustomer: req.body.thirdPartyCustomer,
+      contactPerson: req.body.contactPerson,
+      phoneNumber: req.body.phoneNumber,
+      remarks: req.body.remarks || "Test remarks",
+      companyName: "HEMANT TRADERS",
+      gstNumber: "27AAVPG7824M1ZX",
+    };
+
+    console.log("Test data for PDF:", JSON.stringify(testData, null, 2));
+
+    const pdfBuffer = await generatePDF(testData);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "attachment; filename=test-po.pdf");
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error("Test PDF generation error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Test PDF generation failed",
+      error: error.message,
     });
   }
 };
@@ -499,5 +603,6 @@ const resetPOCounter = async (req, res) => {
 module.exports = {
   sendOrderEmail,
   getCurrentPONumber,
-  resetPOCounter
+  resetPOCounter,
+  testPDFGeneration, // Add this for testing
 };
