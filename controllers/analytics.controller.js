@@ -643,20 +643,32 @@ const getProductSalesAnalytics = async (req, res) => {
     pipeline.push({
       $group: {
         _id: groupId,
-        totalQuantitySold: { $sum: "$products.quantity" },
-        totalRevenue: { $sum: "$products.total_price" },
+        totalQuantitySold: {
+          $sum: { $toDouble: { $ifNull: ["$products.quantity", 0] } },
+        },
+        totalRevenue: {
+          $sum: { $toDouble: { $ifNull: ["$products.total_price", 0] } },
+        },
         totalCost: {
           $sum: {
             $multiply: [
-              "$products.quantity",
+              { $toDouble: { $ifNull: ["$products.quantity", 0] } },
               { $toDouble: { $ifNull: ["$productDetails.cost", 0] } },
             ],
           },
         },
-        averageSalePrice: { $avg: "$products.unit_price" },
-        averageQuantityPerInvoice: { $avg: "$products.quantity" },
-        minSalePrice: { $min: "$products.unit_price" },
-        maxSalePrice: { $max: "$products.unit_price" },
+        averageSalePrice: {
+          $avg: { $toDouble: { $ifNull: ["$products.unit_price", 0] } },
+        },
+        averageQuantityPerInvoice: {
+          $avg: { $toDouble: { $ifNull: ["$products.quantity", 0] } },
+        },
+        minSalePrice: {
+          $min: { $toDouble: { $ifNull: ["$products.unit_price", 0] } },
+        },
+        maxSalePrice: {
+          $max: { $toDouble: { $ifNull: ["$products.unit_price", 0] } },
+        },
         invoiceCount: { $sum: 1 },
         uniqueCustomers: { $addToSet: "$customer" },
         widthsSold: { $addToSet: "$products.width" },
@@ -741,8 +753,12 @@ const getProductSalesAnalytics = async (req, res) => {
       data: results,
       summary: {
         totalQuantitySold: overallSummary.totalQuantity,
-        totalRevenue: Math.round(overallSummary.totalRevenue * 100) / 100,
-        totalProfit: Math.round(overallSummary.totalProfit * 100) / 100,
+        totalRevenue: parseInt(
+          Math.round(overallSummary.totalRevenue * 100) / 100
+        ),
+        totalProfit: parseInt(
+          Math.round(overallSummary.totalProfit * 100) / 100
+        ),
         totalInvoices: overallSummary.totalInvoices,
         averageRevenuePerInvoice:
           overallSummary.totalInvoices > 0
