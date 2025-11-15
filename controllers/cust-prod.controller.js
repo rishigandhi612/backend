@@ -291,7 +291,7 @@ const createCustomerProducts = async (req, res, next) => {
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
 
-    // If the counter doesn't exist, set the initial value to 787
+    // If the counter doesn't exist, set the initial value to
     if (counter.value === 1) {
       counter = await Counter.findOneAndUpdate(
         { name: "invoiceNumber" },
@@ -381,12 +381,23 @@ const updateCustomerProducts = async (req, res, next) => {
         .json({ success: false, message: "CustomerProduct not found" });
     }
 
-    if (
-      updatedData.rollIds &&
-      Array.isArray(updatedData.rollIds) &&
-      updatedData.rollIds.length > 0
-    ) {
-      const rollIdValidation = await validateRollIds(updatedData.rollIds);
+    // FIX 1: Deduplicate roll IDs
+    const newRollIds = updatedData.rollIds
+      ? [
+          ...new Set(
+            updatedData.rollIds
+              .map((id) => id.trim())
+              .filter((id) => id.length > 0)
+          ),
+        ]
+      : [];
+
+    // FIX 2: Validate with current invoice context
+    if (newRollIds.length > 0) {
+      const rollIdValidation = await validateRollIdsForUpdate(
+        newRollIds,
+        existingInvoice.invoiceNumber
+      );
       if (!rollIdValidation.valid) {
         return res.status(400).json({
           success: false,
@@ -396,7 +407,7 @@ const updateCustomerProducts = async (req, res, next) => {
       }
     }
 
-    // ✅ Validate transporter if provided
+    // Validate transporter if provided
     if (updatedData.transporter) {
       const transporterExists = await Transporter.findById(
         updatedData.transporter
@@ -408,7 +419,8 @@ const updateCustomerProducts = async (req, res, next) => {
         });
       }
     }
-    // Initialize totalAmount and updatedProducts
+
+    // Calculate totals and prepare invoice data
     let totalAmount = 0;
     const updatedProducts = [];
 
@@ -417,7 +429,6 @@ const updateCustomerProducts = async (req, res, next) => {
         const { product, width, quantity, unit_price, totalPrice } =
           productData;
 
-        // Validate product fields
         if (width && isNaN(width)) {
           return res.status(400).json({
             success: false,
@@ -443,7 +454,6 @@ const updateCustomerProducts = async (req, res, next) => {
           });
         }
 
-        // Add the product details to the updated products list
         updatedProducts.push({
           product,
           width,
@@ -452,24 +462,20 @@ const updateCustomerProducts = async (req, res, next) => {
           totalPrice: parseFloat(totalPrice),
         });
 
-        // Update total amount
         totalAmount += parseFloat(totalPrice);
       }
     }
 
-    // Use tax values directly from the request body
     const otherCharges = parseFloat(updatedData.otherCharges) || 0;
     const cgstAmount = parseFloat(updatedData.cgst) || 0;
     const sgstAmount = parseFloat(updatedData.sgst) || 0;
     const igstAmount = parseFloat(updatedData.igst) || 0;
 
-    // Calculate grand total including all applicable taxes
     const totalWithOtherCharges = totalAmount + otherCharges;
     const grandTotal = Math.round(
       totalWithOtherCharges + cgstAmount + sgstAmount + igstAmount
     );
 
-    // Prepare updated invoice data
     const newInvoiceData = {
       ...updatedData,
       products: updatedProducts.length > 0 ? updatedProducts : undefined,
@@ -480,38 +486,34 @@ const updateCustomerProducts = async (req, res, next) => {
       igst: igstAmount,
     };
 
-    // Handle roll ID changes
+    // Calculate roll ID changes
     const oldRollIds = existingInvoice.rollIds || [];
-    const newRollIds = updatedData.rollIds
-      ? updatedData.rollIds.map((id) => id.trim()).filter((id) => id.length > 0)
-      : [];
+    const removedRollIds = oldRollIds.filter((id) => !newRollIds.includes(id));
+    const addedRollIds = newRollIds.filter((id) => !oldRollIds.includes(id));
 
-    // Update the invoice in the database
-    let response = await CustomerProduct.findByIdAndUpdate(
-      pid,
-      newInvoiceData,
-      { new: true }
-    );
-
-    if (!response) {
-      return res.status(404).json({
-        success: false,
-        message: "CustomerProduct not found",
-      });
-    }
-
-    // Update inventory status based on roll ID changes
+    // FIX 3: Update inventory BEFORE invoice update with rollback capability
+    let inventoryUpdateSuccess = false;
     try {
-      // Find roll IDs that were removed (mark as available)
-      const removedRollIds = oldRollIds.filter(
-        (id) => !newRollIds.includes(id)
-      );
+      // Re-validate just before updating (prevents race conditions)
+      if (addedRollIds.length > 0) {
+        const finalValidation = await validateRollIdsForUpdate(
+          addedRollIds,
+          existingInvoice.invoiceNumber
+        );
+        if (!finalValidation.valid) {
+          return res.status(400).json({
+            success: false,
+            message: "Roll IDs became unavailable during update",
+            errors: finalValidation.errors,
+          });
+        }
+      }
+
+      // Update inventory status
       if (removedRollIds.length > 0) {
         await updateInventoryStatus(removedRollIds, "available");
       }
 
-      // Find roll IDs that were added (mark as sold)
-      const addedRollIds = newRollIds.filter((id) => !oldRollIds.includes(id));
       if (addedRollIds.length > 0) {
         await updateInventoryStatus(
           addedRollIds,
@@ -519,22 +521,123 @@ const updateCustomerProducts = async (req, res, next) => {
           existingInvoice.invoiceNumber
         );
       }
+
+      inventoryUpdateSuccess = true;
     } catch (inventoryError) {
-      console.error(
-        "Error updating inventory status during update:",
-        inventoryError
-      );
-      // Continue with the response but log the error
+      console.error("Error updating inventory status:", inventoryError);
+
+      // FIX 4: Return error instead of silent failure
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update inventory status",
+        error: inventoryError.message,
+      });
+    }
+
+    // Now update the invoice
+    let response;
+    try {
+      response = await CustomerProduct.findByIdAndUpdate(pid, newInvoiceData, {
+        new: true,
+      });
+
+      if (!response) {
+        // FIX 5: Rollback inventory changes if invoice update fails
+        if (inventoryUpdateSuccess) {
+          // Reverse the changes
+          if (addedRollIds.length > 0) {
+            await updateInventoryStatus(addedRollIds, "available");
+          }
+          if (removedRollIds.length > 0) {
+            await updateInventoryStatus(
+              removedRollIds,
+              "sold",
+              existingInvoice.invoiceNumber
+            );
+          }
+        }
+
+        return res.status(404).json({
+          success: false,
+          message: "CustomerProduct not found",
+        });
+      }
+    } catch (invoiceError) {
+      // Rollback inventory changes
+      if (inventoryUpdateSuccess) {
+        try {
+          if (addedRollIds.length > 0) {
+            await updateInventoryStatus(addedRollIds, "available");
+          }
+          if (removedRollIds.length > 0) {
+            await updateInventoryStatus(
+              removedRollIds,
+              "sold",
+              existingInvoice.invoiceNumber
+            );
+          }
+        } catch (rollbackError) {
+          console.error(
+            "CRITICAL: Failed to rollback inventory:",
+            rollbackError
+          );
+        }
+      }
+
+      throw invoiceError; // Re-throw to be caught by outer catch
     }
 
     res.json({
       success: true,
       data: response,
       message: "Invoice updated successfully",
+      inventoryUpdates: {
+        added: addedRollIds.length,
+        removed: removedRollIds.length,
+      },
     });
   } catch (error) {
+    console.error("Error in updateCustomerProducts:", error);
     res.status(500).json({ success: false, error: error.message });
   }
+};
+
+// FIX 6: New validation function that allows current invoice's rolls
+const validateRollIdsForUpdate = async (rollIds, currentInvoiceNumber) => {
+  if (!rollIds || rollIds.length === 0) return { valid: true, errors: [] };
+
+  const errors = [];
+  const validRollIds = [];
+
+  for (const rollId of rollIds) {
+    try {
+      const inventoryItem = await prisma.inventory.findUnique({
+        where: { rollId: rollId.trim() },
+      });
+
+      if (!inventoryItem) {
+        errors.push(`Roll ID ${rollId} not found in inventory`);
+      } else if (inventoryItem.status === "damaged") {
+        errors.push(
+          `Roll ID ${rollId} is marked as damaged and cannot be sold`
+        );
+      } else if (
+        inventoryItem.status === "sold" &&
+        inventoryItem.invoiceNumber !== currentInvoiceNumber
+      ) {
+        // Allow if it's sold to THIS invoice, reject if sold to another
+        errors.push(
+          `Roll ID ${rollId} is already sold to invoice ${inventoryItem.invoiceNumber}`
+        );
+      } else {
+        validRollIds.push(rollId.trim());
+      }
+    } catch (error) {
+      errors.push(`Error validating Roll ID ${rollId}: ${error.message}`);
+    }
+  }
+
+  return { valid: errors.length === 0, errors, validRollIds };
 };
 
 const deleteCustomerProducts = async (req, res, next) => {
