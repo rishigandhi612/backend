@@ -14,6 +14,8 @@ const {
   getWidthDistribution,
   getSalesTrends,
   getAnalyticsDashboard,
+  diagnoseWidthRevenueIssues,
+  suggestDataFixes,
 } = require("../controllers/analytics.controller");
 
 /**
@@ -32,7 +34,8 @@ const {
  *   - limit (optional): number of results
  */
 router.get("/quantity-by-width", getQuantitySoldByWidth);
-
+router.get("/diagnose-width-revenue", diagnoseWidthRevenueIssues);
+router.get("/suggest-data-fixes", suggestDataFixes);
 /**
  * @route   GET /api/analytics/product-sales
  * @desc    Get comprehensive product sales analytics

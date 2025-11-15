@@ -579,22 +579,46 @@ const getProductSalesAnalytics = async (req, res) => {
 
     const matchStage = {};
 
+    // Date filtering
     if (startDate || endDate) {
       matchStage.createdAt = {};
       if (startDate) matchStage.createdAt.$gte = new Date(startDate);
-      if (endDate) matchStage.createdAt.$lte = new Date(endDate);
+      if (endDate) {
+        // Include entire end date by setting to end of day
+        const endDateTime = new Date(endDate);
+        endDateTime.setHours(23, 59, 59, 999);
+        matchStage.createdAt.$lte = endDateTime;
+      }
     }
 
+    // Customer filtering - Fixed deprecated ObjectId usage
     if (customerId) {
-      matchStage.customer = mongoose.Types.ObjectId(customerId);
+      try {
+        matchStage.customer = new mongoose.Types.ObjectId(customerId);
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid customer ID format",
+        });
+      }
     }
 
     const pipeline = [{ $match: matchStage }, { $unwind: "$products" }];
 
+    // Product filtering - Fixed deprecated ObjectId usage
     if (productId) {
-      pipeline.push({
-        $match: { "products.product": mongoose.Types.ObjectId(productId) },
-      });
+      try {
+        pipeline.push({
+          $match: {
+            "products.product": new mongoose.Types.ObjectId(productId),
+          },
+        });
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid product ID format",
+        });
+      }
     }
 
     // Add quantity range filter
@@ -621,12 +645,27 @@ const getProductSalesAnalytics = async (req, res) => {
       $unwind: { path: "$productDetails", preserveNullAndEmptyArrays: true },
     });
 
-    // Define grouping
+    // Lookup customer details (for groupBy customer)
+    if (groupBy === "customer") {
+      pipeline.push({
+        $lookup: {
+          from: "customers",
+          localField: "customer",
+          foreignField: "_id",
+          as: "customerDetails",
+        },
+      });
+
+      pipeline.push({
+        $unwind: { path: "$customerDetails", preserveNullAndEmptyArrays: true },
+      });
+    }
+
+    // Define grouping - Fixed to use lookup data instead of embedded data
     let groupId = {};
     if (groupBy === "product") {
       groupId = {
         productId: "$products.product",
-        productName: "$products.name",
       };
     } else if (groupBy === "month") {
       groupId = {
@@ -643,6 +682,9 @@ const getProductSalesAnalytics = async (req, res) => {
     pipeline.push({
       $group: {
         _id: groupId,
+        // Always get product/customer name from lookup, not embedded data
+        productName: { $first: "$productDetails.name" },
+        customerName: { $first: "$customerDetails.name" },
         totalQuantitySold: {
           $sum: { $toDouble: { $ifNull: ["$products.quantity", 0] } },
         },
@@ -670,6 +712,7 @@ const getProductSalesAnalytics = async (req, res) => {
           $max: { $toDouble: { $ifNull: ["$products.unit_price", 0] } },
         },
         invoiceCount: { $sum: 1 },
+        uniqueInvoices: { $addToSet: "$_id" },
         uniqueCustomers: { $addToSet: "$customer" },
         widthsSold: { $addToSet: "$products.width" },
       },
@@ -679,6 +722,8 @@ const getProductSalesAnalytics = async (req, res) => {
     pipeline.push({
       $project: {
         _id: 1,
+        productName: 1,
+        customerName: 1,
         totalQuantitySold: 1,
         totalRevenue: { $round: ["$totalRevenue", 2] },
         totalCost: { $round: ["$totalCost", 2] },
@@ -714,12 +759,13 @@ const getProductSalesAnalytics = async (req, res) => {
         minSalePrice: { $round: ["$minSalePrice", 2] },
         maxSalePrice: { $round: ["$maxSalePrice", 2] },
         invoiceCount: 1,
+        uniqueInvoiceCount: { $size: "$uniqueInvoices" },
         uniqueCustomerCount: { $size: "$uniqueCustomers" },
         widthsSold: 1,
       },
     });
 
-    // Sort
+    // Sort - Fixed empty sort stage bug
     const sortStage = {};
     if (sortBy === "quantity") {
       sortStage.totalQuantitySold = sortOrder === "desc" ? -1 : 1;
@@ -727,39 +773,48 @@ const getProductSalesAnalytics = async (req, res) => {
       sortStage.totalRevenue = sortOrder === "desc" ? -1 : 1;
     } else if (sortBy === "profit") {
       sortStage.grossProfit = sortOrder === "desc" ? -1 : 1;
+    } else {
+      // Default sort by revenue if invalid sortBy provided
+      sortStage.totalRevenue = -1;
     }
     pipeline.push({ $sort: sortStage });
 
-    if (limit && !isNaN(limit)) {
+    // Apply limit
+    if (limit && !isNaN(limit) && parseInt(limit) > 0) {
       pipeline.push({ $limit: parseInt(limit) });
     }
 
     const results = await CustomerProduct.aggregate(pipeline);
 
-    // Calculate overall summary
+    // Calculate overall summary - Fixed parseInt bug that was losing decimals
     const overallSummary = results.reduce(
       (acc, curr) => {
         acc.totalQuantity += curr.totalQuantitySold;
         acc.totalRevenue += curr.totalRevenue;
         acc.totalProfit += curr.grossProfit || 0;
         acc.totalInvoices += curr.invoiceCount;
+        acc.uniqueInvoices.add(curr._id.toString());
         return acc;
       },
-      { totalQuantity: 0, totalRevenue: 0, totalProfit: 0, totalInvoices: 0 }
+      {
+        totalQuantity: 0,
+        totalRevenue: 0,
+        totalProfit: 0,
+        totalInvoices: 0,
+        uniqueInvoices: new Set(),
+      }
     );
 
     res.json({
       success: true,
       data: results,
       summary: {
-        totalQuantitySold: overallSummary.totalQuantity,
-        totalRevenue: parseInt(
-          Math.round(overallSummary.totalRevenue * 100) / 100
-        ),
-        totalProfit: parseInt(
-          Math.round(overallSummary.totalProfit * 100) / 100
-        ),
+        totalQuantitySold: Math.round(overallSummary.totalQuantity * 100) / 100,
+        totalRevenue: Math.round(overallSummary.totalRevenue * 100) / 100,
+        totalProfit: Math.round(overallSummary.totalProfit * 100) / 100,
         totalInvoices: overallSummary.totalInvoices,
+        totalLineItems: overallSummary.totalLineItems,
+        totalUniqueInvoices: overallSummary.uniqueInvoices.size,
         averageRevenuePerInvoice:
           overallSummary.totalInvoices > 0
             ? Math.round(
@@ -969,7 +1024,7 @@ const getAverageSaleCost = async (req, res) => {
 };
 
 /**
- * Get comprehensive monthly sales dashboard
+ * Get comprehensive monthly sales dashboard with accurate invoice counting
  */
 const getMonthlySalesDashboard = async (req, res) => {
   try {
@@ -979,23 +1034,39 @@ const getMonthlySalesDashboard = async (req, res) => {
     const startDate = new Date(`${year}-01-01`);
     const endDate = new Date(`${year}-12-31`);
 
-    // Current year data
+    // Current year data with accurate invoice counting
     const currentYearPipeline = [
       {
         $match: {
           createdAt: { $gte: startDate, $lte: endDate },
         },
       },
+      {
+        $addFields: {
+          month: { $month: "$createdAt" },
+        },
+      },
       { $unwind: "$products" },
       {
         $group: {
           _id: {
-            month: { $month: "$createdAt" },
+            month: "$month",
             width: "$products.width",
+            invoiceId: "$_id", // Group by invoice ID to prevent duplicates
           },
           quantitySold: { $sum: "$products.quantity" },
           revenue: { $sum: "$products.total_price" },
-          invoiceCount: { $sum: 1 },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            month: "$_id.month",
+            width: "$_id.width",
+          },
+          quantitySold: { $sum: "$quantitySold" },
+          revenue: { $sum: "$revenue" },
+          uniqueInvoices: { $addToSet: "$_id.invoiceId" }, // Collect unique invoice IDs
         },
       },
       {
@@ -1003,7 +1074,7 @@ const getMonthlySalesDashboard = async (req, res) => {
           _id: "$_id.month",
           totalQuantity: { $sum: "$quantitySold" },
           totalRevenue: { $sum: "$revenue" },
-          totalInvoices: { $sum: "$invoiceCount" },
+          allInvoiceIds: { $push: "$uniqueInvoices" }, // Collect all invoice ID arrays
           widthBreakdown: {
             $push: {
               width: "$_id.width",
@@ -1013,7 +1084,6 @@ const getMonthlySalesDashboard = async (req, res) => {
           },
         },
       },
-      { $sort: { _id: 1 } },
       {
         $project: {
           _id: 0,
@@ -1039,13 +1109,39 @@ const getMonthlySalesDashboard = async (req, res) => {
           },
           totalQuantity: 1,
           totalRevenue: { $round: ["$totalRevenue", 2] },
-          totalInvoices: 1,
+          // Flatten and deduplicate invoice IDs across all widths in the month
+          totalInvoices: {
+            $size: {
+              $reduce: {
+                input: "$allInvoiceIds",
+                initialValue: [],
+                in: { $setUnion: ["$$value", "$$this"] },
+              },
+            },
+          },
           averageInvoiceValue: {
-            $round: [{ $divide: ["$totalRevenue", "$totalInvoices"] }, 2],
+            $round: [
+              {
+                $divide: [
+                  "$totalRevenue",
+                  {
+                    $size: {
+                      $reduce: {
+                        input: "$allInvoiceIds",
+                        initialValue: [],
+                        in: { $setUnion: ["$$value", "$$this"] },
+                      },
+                    },
+                  },
+                ],
+              },
+              2,
+            ],
           },
           widthBreakdown: 1,
         },
       },
+      { $sort: { month: 1 } },
     ];
 
     const currentYearData = await CustomerProduct.aggregate(
@@ -1066,12 +1162,36 @@ const getMonthlySalesDashboard = async (req, res) => {
             createdAt: { $gte: lastYearStart, $lte: lastYearEnd },
           },
         },
+        {
+          $addFields: {
+            month: { $month: "$createdAt" },
+          },
+        },
         { $unwind: "$products" },
         {
           $group: {
-            _id: { $month: "$createdAt" },
-            totalQuantity: { $sum: "$products.quantity" },
-            totalRevenue: { $sum: "$products.total_price" },
+            _id: {
+              month: "$month",
+              invoiceId: "$_id",
+            },
+            quantitySold: { $sum: "$products.quantity" },
+            revenue: { $sum: "$products.total_price" },
+          },
+        },
+        {
+          $group: {
+            _id: "$_id.month",
+            totalQuantity: { $sum: "$quantitySold" },
+            totalRevenue: { $sum: "$revenue" },
+            uniqueInvoiceIds: { $addToSet: "$_id.invoiceId" },
+          },
+        },
+        {
+          $project: {
+            _id: 1,
+            totalQuantity: 1,
+            totalRevenue: 1,
+            totalInvoices: { $size: "$uniqueInvoiceIds" },
           },
         },
         { $sort: { _id: 1 } },
@@ -1086,26 +1206,49 @@ const getMonthlySalesDashboard = async (req, res) => {
         ) || {
           totalQuantity: 0,
           totalRevenue: 0,
+          totalInvoices: 0,
         };
 
         const quantityChange = current.totalQuantity - lastYear.totalQuantity;
         const revenueChange = current.totalRevenue - lastYear.totalRevenue;
+        const invoiceChange = current.totalInvoices - lastYear.totalInvoices;
 
         return {
           month: current.month,
           monthName: current.monthName,
-          quantityGrowth:
-            lastYear.totalQuantity > 0
-              ? Math.round(
-                  (quantityChange / lastYear.totalQuantity) * 100 * 100
-                ) / 100
-              : null,
-          revenueGrowth:
-            lastYear.totalRevenue > 0
-              ? Math.round(
-                  (revenueChange / lastYear.totalRevenue) * 100 * 100
-                ) / 100
-              : null,
+          currentYear: {
+            quantity: current.totalQuantity,
+            revenue: current.totalRevenue,
+            invoices: current.totalInvoices,
+          },
+          lastYear: {
+            quantity: lastYear.totalQuantity,
+            revenue: lastYear.totalRevenue,
+            invoices: lastYear.totalInvoices,
+          },
+          growth: {
+            quantityChange,
+            revenueChange: Math.round(revenueChange * 100) / 100,
+            invoiceChange,
+            quantityGrowthPercent:
+              lastYear.totalQuantity > 0
+                ? Math.round(
+                    (quantityChange / lastYear.totalQuantity) * 100 * 100
+                  ) / 100
+                : null,
+            revenueGrowthPercent:
+              lastYear.totalRevenue > 0
+                ? Math.round(
+                    (revenueChange / lastYear.totalRevenue) * 100 * 100
+                  ) / 100
+                : null,
+            invoiceGrowthPercent:
+              lastYear.totalInvoices > 0
+                ? Math.round(
+                    (invoiceChange / lastYear.totalInvoices) * 100 * 100
+                  ) / 100
+                : null,
+          },
         };
       });
     }
@@ -1121,15 +1264,49 @@ const getMonthlySalesDashboard = async (req, res) => {
       { totalQuantity: 0, totalRevenue: 0, totalInvoices: 0 }
     );
 
+    // Calculate best and worst performing months
+    const bestMonth = currentYearData.reduce((best, current) =>
+      current.totalRevenue > best.totalRevenue ? current : best
+    );
+
+    const worstMonth = currentYearData.reduce((worst, current) =>
+      current.totalRevenue < worst.totalRevenue ? current : worst
+    );
+
     res.json({
       success: true,
       year: parseInt(year),
       monthlyData: currentYearData,
       yearSummary: {
-        ...yearSummary,
+        totalQuantity: yearSummary.totalQuantity,
         totalRevenue: Math.round(yearSummary.totalRevenue * 100) / 100,
+        totalInvoices: yearSummary.totalInvoices,
         averageMonthlyRevenue:
           Math.round((yearSummary.totalRevenue / 12) * 100) / 100,
+        averageMonthlyInvoices: Math.round(yearSummary.totalInvoices / 12),
+        averageInvoiceValue:
+          yearSummary.totalInvoices > 0
+            ? Math.round(
+                (yearSummary.totalRevenue / yearSummary.totalInvoices) * 100
+              ) / 100
+            : 0,
+      },
+      insights: {
+        bestPerformingMonth: {
+          month: bestMonth.monthName,
+          revenue: bestMonth.totalRevenue,
+        },
+        worstPerformingMonth: {
+          month: worstMonth.monthName,
+          revenue: worstMonth.totalRevenue,
+        },
+        revenueVolatility:
+          Math.round(
+            ((bestMonth.totalRevenue - worstMonth.totalRevenue) /
+              worstMonth.totalRevenue) *
+              100 *
+              100
+          ) / 100,
       },
       comparison: compareWithLastYear === "true" ? comparison : null,
     });
@@ -1327,9 +1504,384 @@ const getCustomerPurchasePatterns = async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+/**
+ * Diagnostic function to identify data quality issues
+ * This helps find zero revenue widths and other data problems
+ */
+const diagnoseWidthRevenueIssues = async (req, res) => {
+  try {
+    const { year = new Date().getFullYear(), month } = req.query;
+
+    const startDate = new Date(`${year}-01-01`);
+    const endDate = new Date(`${year}-12-31`);
+
+    const matchStage = {
+      createdAt: { $gte: startDate, $lte: endDate },
+    };
+
+    if (month) {
+      matchStage.$expr = {
+        $eq: [{ $month: "$createdAt" }, parseInt(month)],
+      };
+    }
+
+    // Find all product entries with issues
+    const issuesPipeline = [
+      { $match: matchStage },
+      { $unwind: "$products" },
+      {
+        $addFields: {
+          // Convert string values to numbers
+          "products.total_price_num": {
+            $toDouble: { $ifNull: ["$products.total_price", 0] },
+          },
+          "products.quantity_num": {
+            $toDouble: { $ifNull: ["$products.quantity", 0] },
+          },
+          "products.unit_price_num": {
+            $toDouble: { $ifNull: ["$products.unit_price", 0] },
+          },
+        },
+      },
+      {
+        $project: {
+          invoiceId: "$_id",
+          invoiceNumber: 1,
+          customerName: "$customer",
+          createdAt: 1,
+          productName: "$products.name",
+          width: "$products.width",
+          quantity: "$products.quantity_num",
+          unitPrice: "$products.unit_price_num",
+          totalPrice: "$products.total_price_num",
+          hasIssue: {
+            $or: [
+              { $eq: ["$products.total_price_num", 0] },
+              { $eq: ["$products.total_price", null] },
+              { $lte: ["$products.total_price_num", 0] },
+              { $eq: ["$products.quantity_num", 0] },
+              { $eq: ["$products.quantity", null] },
+              { $lte: ["$products.quantity_num", 0] },
+              { $eq: ["$products.width", null] },
+            ],
+          },
+          issueType: {
+            $switch: {
+              branches: [
+                {
+                  case: { $eq: ["$products.total_price", null] },
+                  then: "NULL_TOTAL_PRICE",
+                },
+                {
+                  case: { $eq: ["$products.total_price_num", 0] },
+                  then: "ZERO_TOTAL_PRICE",
+                },
+                {
+                  case: { $lt: ["$products.total_price_num", 0] },
+                  then: "NEGATIVE_TOTAL_PRICE",
+                },
+                {
+                  case: { $eq: ["$products.quantity", null] },
+                  then: "NULL_QUANTITY",
+                },
+                {
+                  case: { $eq: ["$products.quantity_num", 0] },
+                  then: "ZERO_QUANTITY",
+                },
+                {
+                  case: { $lt: ["$products.quantity_num", 0] },
+                  then: "NEGATIVE_QUANTITY",
+                },
+                {
+                  case: { $eq: ["$products.width", null] },
+                  then: "NULL_WIDTH",
+                },
+              ],
+              default: "UNKNOWN",
+            },
+          },
+        },
+      },
+      {
+        $match: {
+          hasIssue: true,
+        },
+      },
+    ];
+
+    const issues = await CustomerProduct.aggregate(issuesPipeline);
+
+    // Group issues by type
+    const issuesByType = issues.reduce((acc, issue) => {
+      if (!acc[issue.issueType]) {
+        acc[issue.issueType] = [];
+      }
+      acc[issue.issueType].push(issue);
+      return acc;
+    }, {});
+
+    // Get width breakdown with zero revenue - FIXED WITH TYPE CONVERSION
+    const widthBreakdownPipeline = [
+      { $match: matchStage },
+      { $unwind: "$products" },
+      {
+        $addFields: {
+          // Convert string values to numbers before aggregation
+          "products.total_price_num": {
+            $toDouble: { $ifNull: ["$products.total_price", 0] },
+          },
+          "products.quantity_num": {
+            $toDouble: { $ifNull: ["$products.quantity", 0] },
+          },
+          "products.unit_price_num": {
+            $toDouble: { $ifNull: ["$products.unit_price", 0] },
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$products.width",
+          totalQuantity: { $sum: "$products.quantity_num" },
+          totalRevenue: { $sum: "$products.total_price_num" },
+          averageUnitPrice: { $avg: "$products.unit_price_num" },
+          minPrice: { $min: "$products.unit_price_num" },
+          maxPrice: { $max: "$products.unit_price_num" },
+          recordCount: { $sum: 1 },
+          nullPriceCount: {
+            $sum: {
+              $cond: [{ $eq: ["$products.total_price", null] }, 1, 0],
+            },
+          },
+          zeroPriceCount: {
+            $sum: {
+              $cond: [{ $eq: ["$products.total_price_num", 0] }, 1, 0],
+            },
+          },
+          negativePriceCount: {
+            $sum: {
+              $cond: [{ $lt: ["$products.total_price_num", 0] }, 1, 0],
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          width: "$_id",
+          totalQuantity: 1,
+          totalRevenue: { $round: ["$totalRevenue", 2] },
+          averageUnitPrice: { $round: ["$averageUnitPrice", 2] },
+          minPrice: { $round: ["$minPrice", 2] },
+          maxPrice: { $round: ["$maxPrice", 2] },
+          recordCount: 1,
+          nullPriceCount: 1,
+          zeroPriceCount: 1,
+          negativePriceCount: 1,
+          hasDataIssues: {
+            $or: [
+              { $gt: ["$nullPriceCount", 0] },
+              { $gt: ["$zeroPriceCount", 0] },
+              { $gt: ["$negativePriceCount", 0] },
+            ],
+          },
+        },
+      },
+      { $sort: { totalRevenue: 1 } }, // Sort to show zero/low revenue first
+    ];
+
+    const widthBreakdown = await CustomerProduct.aggregate(
+      widthBreakdownPipeline
+    );
+
+    // Get sample invoices with issues for manual review
+    const sampleIssues = await CustomerProduct.aggregate([
+      { $match: matchStage },
+      { $unwind: "$products" },
+      {
+        $addFields: {
+          "products.total_price_num": {
+            $toDouble: { $ifNull: ["$products.total_price", 0] },
+          },
+          "products.quantity_num": {
+            $toDouble: { $ifNull: ["$products.quantity", 0] },
+          },
+          "products.unit_price_num": {
+            $toDouble: { $ifNull: ["$products.unit_price", 0] },
+          },
+        },
+      },
+      {
+        $match: {
+          $or: [
+            { "products.total_price_num": { $lte: 0 } },
+            { "products.total_price": null },
+            { "products.quantity_num": { $lte: 0 } },
+            { "products.quantity": null },
+          ],
+        },
+      },
+      { $limit: 10 },
+      {
+        $project: {
+          invoiceId: "$_id",
+          invoiceNumber: 1,
+          createdAt: 1,
+          productName: "$products.name",
+          width: "$products.width",
+          quantity: "$products.quantity_num",
+          unitPrice: "$products.unit_price_num",
+          totalPrice: "$products.total_price_num",
+        },
+      },
+    ]);
+
+    // Summary statistics
+    const summary = {
+      totalIssuesFound: issues.length,
+      issueBreakdown: Object.keys(issuesByType).map((type) => ({
+        issueType: type,
+        count: issuesByType[type].length,
+      })),
+      widthsWithZeroRevenue: widthBreakdown.filter((w) => w.totalRevenue === 0)
+        .length,
+      widthsWithDataIssues: widthBreakdown.filter((w) => w.hasDataIssues)
+        .length,
+      totalWidthsAnalyzed: widthBreakdown.length,
+    };
+
+    res.json({
+      success: true,
+      summary,
+      widthBreakdown: widthBreakdown.slice(0, 20), // First 20 widths
+      issuesByType,
+      sampleProblematicInvoices: sampleIssues,
+      recommendations: [
+        issues.length > 0
+          ? "Data quality issues detected. Review and fix invoices with null or zero values."
+          : "No major data quality issues found.",
+        widthBreakdown.filter((w) => w.totalRevenue === 0).length > 0
+          ? "Some widths have zero revenue. Check if products are being given away for free or if there's a data entry issue."
+          : "All widths have valid revenue data.",
+        "Consider adding validation at invoice creation to prevent null or zero values in quantity and total_price fields.",
+        "Some numeric fields are stored as strings - consider converting them to numbers at the database level for better performance.",
+      ],
+    });
+  } catch (error) {
+    console.error("Error in diagnoseWidthRevenueIssues:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * Helper function to clean up data issues
+ * WARNING: This modifies data - use with caution!
+ */
+const suggestDataFixes = async (req, res) => {
+  try {
+    const { year = new Date().getFullYear(), dryRun = "true" } = req.query;
+
+    const startDate = new Date(`${year}-01-01`);
+    const endDate = new Date(`${year}-12-31`);
+
+    // Find invoices that need fixing
+    const invoicesNeedingFix = await CustomerProduct.find({
+      createdAt: { $gte: startDate, $lte: endDate },
+      $or: [
+        { "products.total_price": { $in: [0, null] } },
+        { "products.quantity": { $in: [0, null] } },
+      ],
+    }).limit(100);
+
+    const fixes = [];
+
+    for (const invoice of invoicesNeedingFix) {
+      for (let i = 0; i < invoice.products.length; i++) {
+        const product = invoice.products[i];
+        const issues = [];
+        const suggestedFixes = {};
+
+        // Check total_price
+        if (!product.total_price || product.total_price <= 0) {
+          issues.push("Invalid total_price");
+          // Calculate from quantity and unit_price if available
+          if (product.quantity > 0 && product.unit_price > 0) {
+            suggestedFixes.total_price = product.quantity * product.unit_price;
+          }
+        }
+
+        // Check quantity
+        if (!product.quantity || product.quantity <= 0) {
+          issues.push("Invalid quantity");
+          // Calculate from total_price and unit_price if available
+          if (product.total_price > 0 && product.unit_price > 0) {
+            suggestedFixes.quantity = product.total_price / product.unit_price;
+          }
+        }
+
+        if (issues.length > 0) {
+          fixes.push({
+            invoiceId: invoice._id,
+            invoiceNumber: invoice.invoiceNumber,
+            productIndex: i,
+            productName: product.name,
+            currentValues: {
+              quantity: product.quantity,
+              unit_price: product.unit_price,
+              total_price: product.total_price,
+            },
+            issues,
+            suggestedFixes,
+            canAutoFix: Object.keys(suggestedFixes).length > 0,
+          });
+        }
+      }
+    }
+
+    // Apply fixes if not dry run
+    if (dryRun === "false") {
+      let fixedCount = 0;
+      for (const fix of fixes) {
+        if (fix.canAutoFix) {
+          const updateFields = {};
+          Object.keys(fix.suggestedFixes).forEach((key) => {
+            updateFields[`products.${fix.productIndex}.${key}`] =
+              fix.suggestedFixes[key];
+          });
+
+          await CustomerProduct.updateOne(
+            { _id: fix.invoiceId },
+            { $set: updateFields }
+          );
+          fixedCount++;
+        }
+      }
+
+      return res.json({
+        success: true,
+        message: `Fixed ${fixedCount} out of ${fixes.length} issues`,
+        fixedCount,
+        totalIssues: fixes.length,
+      });
+    }
+
+    res.json({
+      success: true,
+      dryRun: true,
+      message: "This is a dry run. Set dryRun=false to apply fixes.",
+      totalIssuesFound: fixes.length,
+      autoFixableIssues: fixes.filter((f) => f.canAutoFix).length,
+      fixes: fixes.slice(0, 20), // Show first 20
+    });
+  } catch (error) {
+    console.error("Error in suggestDataFixes:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
 
 // Export all functions
 module.exports = {
+  diagnoseWidthRevenueIssues,
+  suggestDataFixes,
   getQuantitySoldByWidth,
   getProductSalesAnalytics,
   getAverageSaleCost,
