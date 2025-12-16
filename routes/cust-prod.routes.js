@@ -23,6 +23,10 @@ const {
   getMonthlyInvoiceTotals,
 } = require("../controllers/cust-prod.controller"); // Adjust path as needed
 
+const {
+  getCustomerInvoicesByFinancialYear,
+} = require("../controllers/ledger.controller");
+
 // Existing routes
 router.get("/", getAllCustomerProducts);
 
@@ -43,4 +47,7 @@ router.delete("/:id/pod", deletePOD);
 // Delivery status routes
 router.put("/:id/delivery-status", updateDeliveryStatus);
 router.get("/delivery-status/:status", getInvoicesByDeliveryStatus);
+
+router.get("/:customerId/invoices", getCustomerInvoicesByFinancialYear);
+
 module.exports = router;
