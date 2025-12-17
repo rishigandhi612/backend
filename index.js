@@ -82,6 +82,9 @@ app.use("/dashboard", CheckAuth, dashboardRoutes);
 const emailRoutes = require("./routes/email.routes.js");
 app.use("/email", CheckAuth, emailRoutes);
 
+const bankRoutes = require("./routes/bank.routes.js");
+app.use("/bank", CheckAuth, bankRoutes);
+
 const counterRoutes = require("./routes/resetcounter.routes.js");
 app.use("/reset", counterRoutes);
 
@@ -93,6 +96,9 @@ const transporterRoutes = require("./routes/transporter.routes");
 app.use("/transporter", CheckAuth, transporterRoutes);
 const analyticsRoutes = require("./routes/analytics.routes");
 app.use("/analytics", CheckAuth, analyticsRoutes);
+
+const findStringRoutes = require("./routes/find-string.routes");
+app.use("/find-string", CheckAuth, findStringRoutes);
 
 // Connect to MongoDB database
 connectDatabase();
