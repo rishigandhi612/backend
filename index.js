@@ -96,7 +96,8 @@ const transporterRoutes = require("./routes/transporter.routes");
 app.use("/transporter", CheckAuth, transporterRoutes);
 const analyticsRoutes = require("./routes/analytics.routes");
 app.use("/analytics", CheckAuth, analyticsRoutes);
-
+const transactionRoutes = require("./routes/transaction.routes");
+app.use("/transaction", CheckAuth, transactionRoutes);
 const findStringRoutes = require("./routes/find-string.routes");
 app.use("/find-string", CheckAuth, findStringRoutes);
 

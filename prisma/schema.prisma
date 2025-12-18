@@ -31,3 +31,37 @@ model Inventory {
   @@index([rollId])
   @@index([status])
 }
+// Define the Transaction model
+model Transaction {
+  id              String    @id @default(uuid())
+  transactionId   String    @unique // Unique transaction identifier (e.g., TXN-2024-0001)
+  bankId          String    // Reference to MongoDB bank ID
+  bankName        String    // Denormalized for quick access
+  invoiceNumber   String    // Reference to MongoDB invoice/bill
+  amount          Decimal   @db.Decimal(10, 2) // Using Decimal for precise currency calculations
+  transactionDate DateTime  @default(now())
+  paymentMethod   String?   @default("bank_transfer") // bank_transfer, cash, cheque, upi, card
+  paymentStatus   String    @default("completed") // pending, completed, failed, refunded
+  reference       String?   // Any reference number (cheque no, UTR, etc.)
+  remarks         String?   @db.Text // Additional notes
+  createdBy       String?   // User who created the transaction
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([bankId])
+  @@index([invoiceNumber])
+  @@index([transactionDate])
+  @@index([paymentStatus])
+  @@index([transactionId])
+}
+// Add to your schema for better tracking
+model TransactionLog {
+  id            String   @id @default(uuid())
+  transactionId String
+  action        String   // created, updated, deleted
+  changes       Json?    // Store what changed
+  userId        String?
+  timestamp     DateTime @default(now())
+  
+  @@index([transactionId])
+}
