@@ -117,5 +117,7 @@ connectDatabase();
 })();
 
 // Start the server with dynamic port from the .env file
-const port = process.env.PORT || 3001; // Default to 3001 if not defined in .env
-app.listen(port, () => console.log(`Server is running on port ${port}`));
+const port = process.env.PORT || 3001;
+app.listen(port, "0.0.0.0", () =>
+  console.log(`Server is running on port ${port}`)
+);
