@@ -16,6 +16,7 @@ const {
   getAnalyticsDashboard,
   diagnoseWidthRevenueIssues,
   suggestDataFixes,
+  getMultiWidthMonthlyAnalytics,
 } = require("../controllers/analytics.controller");
 
 /**
@@ -133,5 +134,6 @@ router.get("/sales-trends", getSalesTrends);
  *   - endDate (optional): ISO date string
  */
 router.get("/dashboard", getAnalyticsDashboard);
+router.post("/multi-width-monthly", getMultiWidthMonthlyAnalytics);
 
 module.exports = router;
