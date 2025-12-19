@@ -6,6 +6,7 @@ const Product = require("../models/product.models"); // Adjust based on your mod
 const CustProd = require("../models/cust-prod.models"); // Adjust based on your model structure
 const User = require("../models/user.models"); // Adjust based on your model structure
 const Transporter = require("../models/transport.models"); // Adjust based on your model structure
+const Bank = require("../models/bank.models"); // Adjust based on your model structure
 const prisma = require("../config/prisma");
 
 // Route to get dashboard statistics
@@ -18,20 +19,28 @@ router.get("/stats", async (req, res) => {
       transporterCount,
       inventoryCount,
       userCount,
+      bankCount,
     ] = await Promise.all([
       Customer.countDocuments(),
       Product.countDocuments(),
       CustProd.countDocuments(),
       Transporter.countDocuments(),
+
       prisma.inventory.count(), // Prisma query for PostgreSQL
       User.countDocuments(),
+      Bank.countDocuments(),
     ]);
-    const [availableInventory, damagedInventory, reservedInventory] =
-      await Promise.all([
-        prisma.inventory.count({ where: { status: "available" } }),
-        prisma.inventory.count({ where: { status: "damaged" } }),
-        prisma.inventory.count({ where: { status: "reserved" } }),
-      ]);
+    const [
+      availableInventory,
+      damagedInventory,
+      reservedInventory,
+      totalTransactions,
+    ] = await Promise.all([
+      prisma.inventory.count({ where: { status: "available" } }),
+      prisma.inventory.count({ where: { status: "damaged" } }),
+      prisma.inventory.count({ where: { status: "reserved" } }),
+      prisma.transaction.count(),
+    ]);
 
     res.json({
       totalCustomers: customerCount,
@@ -40,10 +49,12 @@ router.get("/stats", async (req, res) => {
 
       totalTransporters: transporterCount,
       totalUsers: userCount,
+      totalBanks: bankCount,
       totalInventory: inventoryCount,
       availableInventory,
       reservedInventory,
       damagedInventory,
+      totalTransactions,
     });
   } catch (error) {
     console.error(error);
