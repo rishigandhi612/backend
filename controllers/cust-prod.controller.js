@@ -349,7 +349,17 @@ const createCustomerProducts = async (req, res, next) => {
         console.error("Error updating inventory status:", inventoryError);
       }
     }
-
+    createdInvoice = await CustomerProduct.findByIdAndUpdate(
+      createdInvoice._id,
+      {
+        $set: {
+          paidAmount: 0,
+          pendingAmount: parseFloat(grandTotal),
+          paymentStatus: "UNPAID",
+        },
+      },
+      { new: true }
+    );
     return res.status(201).json({
       success: true,
       data: createdInvoice,

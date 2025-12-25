@@ -111,6 +111,15 @@ const InvoiceSchema = new mongoose.Schema(
       enum: ["pending", "in_transit", "delivered", "cancelled"],
       default: "pending",
     },
+    paidAmount: { type: Number, default: 0 },
+    pendingAmount: { type: Number, required: true },
+
+    paymentStatus: {
+      type: String,
+      enum: ["UNPAID", "PARTIAL", "PAID", "OVERPAID"],
+      default: "UNPAID",
+    },
+
     deliveredAt: {
       type: Date,
       required: false,

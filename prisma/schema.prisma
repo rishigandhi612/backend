@@ -33,26 +33,81 @@ model Inventory {
 }
 // Define the Transaction model
 model Transaction {
-  id              String    @id @default(uuid())
-  transactionId   String    @unique // Unique transaction identifier (e.g., TXN-2024-0001)
-  bankId          String    // Reference to MongoDB bank ID
-  bankName        String    // Denormalized for quick access
-  invoiceNumber   String    // Reference to MongoDB invoice/bill
-  amount          Decimal   @db.Decimal(10, 2) // Using Decimal for precise currency calculations
-  transactionDate DateTime  @default(now())
-  paymentMethod   String?   @default("bank_transfer") // bank_transfer, cash, cheque, upi, card
-  paymentStatus   String    @default("completed") // pending, completed, failed, refunded
-  reference       String?   // Any reference number (cheque no, UTR, etc.)
-  remarks         String?   @db.Text // Additional notes
-  createdBy       String?   // User who created the transaction
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id              String   @id @default(uuid())
+  transactionId   String   @unique
 
-  @@index([bankId])
+  customerId      String
+  bankId          String
+  bankName        String
+
+  transactionType TransactionType
+  voucherType     VoucherType
+
+  totalAmount     Decimal  @db.Decimal(10,2)
+
+  paymentMethod   String
+  paymentStatus   String
+
+  reference       String?
+  remarks         String?
+
+  transactionDate DateTime 
+  createdBy       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  allocations     TransactionAllocation[]
+  ledgerEntries   CustomerLedger[]
+
+  @@index([customerId])
+  @@index([transactionType])
+}
+
+enum TransactionType {
+  ADVANCE
+  AGAINST_REF
+  ON_ACCOUNT
+  REFUND
+}
+
+enum VoucherType {
+  RECEIPT
+  PAYMENT
+  CONTRA
+  JOURNAL
+}
+model TransactionAllocation {
+  id               String   @id @default(uuid())
+  transactionId    String
+  invoiceNumber    String
+  allocatedAmount  Decimal  @db.Decimal(10,2)
+
+  transaction Transaction @relation(fields: [transactionId], references: [id])
+
   @@index([invoiceNumber])
+}
+model CustomerLedger {
+  id              String   @id @default(uuid())
+  customerId      String
+  transactionId   String?
+  transactionDate DateTime
+  debit           Decimal  @db.Decimal(10, 2) @default(0)
+  credit          Decimal  @db.Decimal(10, 2) @default(0)
+  balanceAfter    Decimal  @db.Decimal(10, 2)
+  narration       String
+  referenceType   String?  // "TRANSACTION" | "INVOICE" | "OPENING_OUTSTANDING" | "ADJUSTMENT"
+  referenceId     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, transactionDate, createdAt])
+  @@index([customerId])
   @@index([transactionDate])
-  @@index([paymentStatus])
   @@index([transactionId])
+  @@index([referenceType, referenceId])
+  @@map("customer_ledger")
 }
 // Add to your schema for better tracking
 model TransactionLog {

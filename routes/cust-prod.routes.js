@@ -21,8 +21,15 @@ const {
   resetCounter,
   getAvailableRollIds,
   getMonthlyInvoiceTotals,
-} = require("../controllers/cust-prod.controller"); // Adjust path as needed
-
+} = require("../controllers/cust-prod.controller");
+const {
+  createOpeningOutstanding,
+  getCustomerPendingInvoices,
+  getInvoicePayments,
+  updateOpeningOutstanding,
+  deleteOpeningOutstanding,
+  getAllOpeningOutstanding,
+} = require("../controllers/invoice-opening-outstanding.controller");
 const {
   getCustomerInvoicesByFinancialYear,
 } = require("../controllers/ledger.controller");
@@ -30,24 +37,38 @@ const {
 // Existing routes
 router.get("/", getAllCustomerProducts);
 
-// In your routes file (e.g., customer-product.routes.js)
+// Static routes and utility endpoints
 router.get("/monthly-totals", getMonthlyInvoiceTotals);
-router.get("/:id", getCustomerProductsbyId);
-router.post("/", createCustomerProducts);
-router.put("/:id", updateCustomerProducts);
-router.delete("/:id", deleteCustomerProducts);
 router.post("/reset-counter", resetCounter);
 router.get("/available-rolls/:productId", getAvailableRollIds);
+
+// Opening-outstanding and related customer/invoice routes (specific)
+router.post("/opening-outstanding", createOpeningOutstanding);
+router.get("/opening-outstanding", getAllOpeningOutstanding);
+router.put("/opening-outstanding/:id", updateOpeningOutstanding);
+router.delete("/opening-outstanding/:id", deleteOpeningOutstanding);
+router.get(
+  "/customer/:customerId/pending-invoices",
+  getCustomerPendingInvoices
+);
+router.get("/invoice/:invoiceId/payments", getInvoicePayments);
+
+// Delivery status routes
+router.put("/:id/delivery-status", updateDeliveryStatus);
+router.get("/delivery-status/:status", getInvoicesByDeliveryStatus);
 
 // POD related routes
 router.post("/:id/pod", upload.single("podFile"), uploadPOD);
 router.get("/:id/pod", getPOD);
 router.delete("/:id/pod", deletePOD);
 
-// Delivery status routes
-router.put("/:id/delivery-status", updateDeliveryStatus);
-router.get("/delivery-status/:status", getInvoicesByDeliveryStatus);
-
+// Invoice-related routes
 router.get("/:customerId/invoices", getCustomerInvoicesByFinancialYear);
+
+// Parameterized routes (generic) - keep at bottom so they don't shadow others
+router.get("/:id", getCustomerProductsbyId);
+router.post("/", createCustomerProducts);
+router.put("/:id", updateCustomerProducts);
+router.delete("/:id", deleteCustomerProducts);
 
 module.exports = router;

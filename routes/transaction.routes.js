@@ -20,4 +20,10 @@ router.put("/:id", transactionController.updateTransaction);
 // Delete transaction
 router.delete("/:id", transactionController.deleteTransaction);
 
+// Get invoice payment history
+router.get(
+  "/invoice/:invoiceNumber",
+  transactionController.getInvoicePaymentHistory
+);
+
 module.exports = router;
