@@ -180,7 +180,7 @@ const createCustomerProducts = async (req, res, next) => {
     grandTotal,
     rollIds,
     transporter,
-  } = req.body; // ✅ transporter in body
+  } = req.body;
 
   if (!customer || !customer._id) {
     return res.status(400).json({
@@ -223,7 +223,7 @@ const createCustomerProducts = async (req, res, next) => {
       });
     }
 
-    // ✅ Validate transporter if provided
+    // Validate transporter if provided
     if (transporter) {
       const transporterExists = await Transporter.findById(transporter);
       if (!transporterExists) {
@@ -255,13 +255,6 @@ const createCustomerProducts = async (req, res, next) => {
         });
       }
 
-      // if (quantity > ProductInfo.quantity) {
-      //   return res.status(400).json({
-      //   success: false,
-      //  message: `Insufficient stock for product ${ProductInfo.name}`,
-      //   });
-      // }
-
       invoiceProducts.push({
         product: product._id,
         name: ProductInfo.name,
@@ -291,7 +284,7 @@ const createCustomerProducts = async (req, res, next) => {
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
 
-    // If the counter doesn't exist, set the initial value to
+    // If the counter doesn't exist, set the initial value
     if (counter.value === 1) {
       counter = await Counter.findOneAndUpdate(
         { name: "invoiceNumber" },
@@ -317,6 +310,7 @@ const createCustomerProducts = async (req, res, next) => {
       .toString()
       .padStart(4, "0")}/20${formattedYear}`;
 
+    // ✅ FIX: Include payment fields in initial invoice creation
     const invoiceData = {
       invoiceNumber,
       customer: customer._id,
@@ -327,6 +321,10 @@ const createCustomerProducts = async (req, res, next) => {
       igst: igstAmount,
       totalAmount: calculatedTotalAmount,
       grandTotal: parseFloat(grandTotal),
+      // ✅ Add payment fields here
+      paidAmount: 0,
+      pendingAmount: parseFloat(grandTotal),
+      paymentStatus: "UNPAID",
     };
 
     if (rollIds && Array.isArray(rollIds) && rollIds.length > 0) {
@@ -337,11 +335,13 @@ const createCustomerProducts = async (req, res, next) => {
     }
 
     if (transporter) {
-      invoiceData.transporter = transporter; // ✅ save transporter
+      invoiceData.transporter = transporter;
     }
 
+    // ✅ Create invoice with all fields at once
     let createdInvoice = await CustomerProduct.create(invoiceData);
 
+    // Update inventory status if rollIds exist
     if (invoiceData.rollIds && invoiceData.rollIds.length > 0) {
       try {
         await updateInventoryStatus(invoiceData.rollIds, "sold", invoiceNumber);
@@ -349,17 +349,7 @@ const createCustomerProducts = async (req, res, next) => {
         console.error("Error updating inventory status:", inventoryError);
       }
     }
-    createdInvoice = await CustomerProduct.findByIdAndUpdate(
-      createdInvoice._id,
-      {
-        $set: {
-          paidAmount: 0,
-          pendingAmount: parseFloat(grandTotal),
-          paymentStatus: "UNPAID",
-        },
-      },
-      { new: true }
-    );
+
     return res.status(201).json({
       success: true,
       data: createdInvoice,
@@ -391,7 +381,7 @@ const updateCustomerProducts = async (req, res, next) => {
         .json({ success: false, message: "CustomerProduct not found" });
     }
 
-    // FIX 1: Deduplicate roll IDs
+    // Deduplicate roll IDs
     const newRollIds = updatedData.rollIds
       ? [
           ...new Set(
@@ -402,7 +392,7 @@ const updateCustomerProducts = async (req, res, next) => {
         ]
       : [];
 
-    // FIX 2: Validate with current invoice context
+    // Validate with current invoice context
     if (newRollIds.length > 0) {
       const rollIdValidation = await validateRollIdsForUpdate(
         newRollIds,
@@ -486,6 +476,19 @@ const updateCustomerProducts = async (req, res, next) => {
       totalWithOtherCharges + cgstAmount + sgstAmount + igstAmount
     );
 
+    // ✅ Calculate payment status based on existing payments
+    const currentPaidAmount = existingInvoice.paidAmount || 0;
+    const newPendingAmount = grandTotal - currentPaidAmount;
+
+    let paymentStatus = "UNPAID";
+    if (currentPaidAmount > 0) {
+      if (currentPaidAmount >= grandTotal) {
+        paymentStatus = currentPaidAmount > grandTotal ? "OVERPAID" : "PAID";
+      } else {
+        paymentStatus = "PARTIAL";
+      }
+    }
+
     const newInvoiceData = {
       ...updatedData,
       products: updatedProducts.length > 0 ? updatedProducts : undefined,
@@ -494,6 +497,9 @@ const updateCustomerProducts = async (req, res, next) => {
       cgst: cgstAmount,
       sgst: sgstAmount,
       igst: igstAmount,
+      // ✅ Update payment fields when grandTotal changes
+      pendingAmount: newPendingAmount,
+      paymentStatus: paymentStatus,
     };
 
     // Calculate roll ID changes
@@ -501,7 +507,7 @@ const updateCustomerProducts = async (req, res, next) => {
     const removedRollIds = oldRollIds.filter((id) => !newRollIds.includes(id));
     const addedRollIds = newRollIds.filter((id) => !oldRollIds.includes(id));
 
-    // FIX 3: Update inventory BEFORE invoice update with rollback capability
+    // Update inventory BEFORE invoice update with rollback capability
     let inventoryUpdateSuccess = false;
     try {
       // Re-validate just before updating (prevents race conditions)
@@ -536,7 +542,6 @@ const updateCustomerProducts = async (req, res, next) => {
     } catch (inventoryError) {
       console.error("Error updating inventory status:", inventoryError);
 
-      // FIX 4: Return error instead of silent failure
       return res.status(500).json({
         success: false,
         message: "Failed to update inventory status",
@@ -552,7 +557,7 @@ const updateCustomerProducts = async (req, res, next) => {
       });
 
       if (!response) {
-        // FIX 5: Rollback inventory changes if invoice update fails
+        // Rollback inventory changes if invoice update fails
         if (inventoryUpdateSuccess) {
           // Reverse the changes
           if (addedRollIds.length > 0) {
@@ -594,7 +599,7 @@ const updateCustomerProducts = async (req, res, next) => {
         }
       }
 
-      throw invoiceError; // Re-throw to be caught by outer catch
+      throw invoiceError;
     }
 
     res.json({
@@ -611,7 +616,6 @@ const updateCustomerProducts = async (req, res, next) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
-
 // FIX 6: New validation function that allows current invoice's rolls
 const validateRollIdsForUpdate = async (rollIds, currentInvoiceNumber) => {
   if (!rollIds || rollIds.length === 0) return { valid: true, errors: [] };
