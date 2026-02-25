@@ -39,7 +39,7 @@ router.get("/stats", async (req, res) => {
       prisma.inventory.count({ where: { status: "available" } }),
       prisma.inventory.count({ where: { status: "damaged" } }),
       prisma.inventory.count({ where: { status: "reserved" } }),
-      prisma.transaction.count(),
+      // prisma.transaction.count(),
     ]);
 
     res.json({
