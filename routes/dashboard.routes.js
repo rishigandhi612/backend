@@ -30,17 +30,17 @@ router.get("/stats", async (req, res) => {
       User.countDocuments(),
       Bank.countDocuments(),
     ]);
-    const [
-      availableInventory,
-      damagedInventory,
-      reservedInventory,
-      totalTransactions,
-    ] = await Promise.all([
-      prisma.inventory.count({ where: { status: "available" } }),
-      prisma.inventory.count({ where: { status: "damaged" } }),
-      prisma.inventory.count({ where: { status: "reserved" } }),
-      // prisma.transaction.count(),
-    ]);
+    // const [
+    //   availableInventory,
+    //   damagedInventory,
+    //   reservedInventory,
+    //   totalTransactions,
+    // ] = await Promise.all([
+    //   prisma.inventory.count({ where: { status: "available" } }),
+    //   prisma.inventory.count({ where: { status: "damaged" } }),
+    //   prisma.inventory.count({ where: { status: "reserved" } }),
+    //   // prisma.transaction.count(),
+    // ]);
 
     res.json({
       totalCustomers: customerCount,
@@ -51,10 +51,10 @@ router.get("/stats", async (req, res) => {
       totalUsers: userCount,
       totalBanks: bankCount,
       totalInventory: inventoryCount,
-      availableInventory,
-      reservedInventory,
-      damagedInventory,
-      totalTransactions,
+      // availableInventory,
+      // reservedInventory,
+      // damagedInventory,
+      // totalTransactions,
     });
   } catch (error) {
     console.error(error);
