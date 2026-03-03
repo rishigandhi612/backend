@@ -1,73 +1,175 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DIRECT_URL")
+  url      = env("DATABASE_URL")
 }
 
-// Define the Inventory model
 model Inventory {
-  id          String   @id @default(uuid())
-  productId   String   // Reference to MongoDB product ID
-  width       Float?   // Optional width
-  netWeight   Float    // Required net weight
-  grossWeight Float?   // Optional gross weight
-  rollId      String   @unique // Required roll ID
-  micron      Float?   // Optional micron
-  mtr         Float?   // Optional meter
-  type        String   @default("film") // Options: "film" or "non-film"
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  status        String    @default("available") // damaged, available, reserved, sold
-  invoiceNumber String?   
-  soldAt        DateTime? // Timestamp when item was sold
+  id            String    @id @default(uuid())
+  productId     String
+  width         Float?
+  netWeight     Float
+  grossWeight   Float?
+  rollId        String    @unique
+  micron        Float?
+  mtr           Float?
+  type          String    @default("film")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  status        String    @default("available")
+  invoiceNumber String?
+  soldAt        DateTime?
 
   @@index([productId])
   @@index([rollId])
   @@index([status])
 }
-// Define the Transaction model
-model Transaction {
-  id              String   @id @default(uuid())
-  transactionId   String   @unique
 
-  customerId      String
-  bankId          String
-  bankName        String
+model LedgerAccount {
+  id           String            @id @default(uuid())
+  code         String            @unique
+  name         String
+  type         LedgerAccountType
+  description  String?
+  isActive     Boolean           @default(true)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  debitEntries VoucherEntry[]    @relation("DebitAccount")
 
-  transactionType TransactionType
-  voucherType     VoucherType
-
-  totalAmount     Decimal  @db.Decimal(10,2)
-
-  paymentMethod   String
-  paymentStatus   String
-
-  reference       String?
-  remarks         String?
-
-  transactionDate DateTime 
-  createdBy       String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  allocations     TransactionAllocation[]
-  ledgerEntries   CustomerLedger[]
-
-  @@index([customerId])
-  @@index([transactionType])
+  @@index([type])
+  @@index([isActive])
+  @@map("ledger_accounts")
 }
 
-enum TransactionType {
-  ADVANCE
-  AGAINST_REF
-  ON_ACCOUNT
-  REFUND
+model Bill {
+  id               String           @id @default(uuid())
+  mongoInvoiceId   String?          @unique
+  invoiceNumber    String           @unique
+  customerId       String
+  billAmount       Decimal          @db.Decimal(12, 2)
+  allocatedAmount  Decimal          @default(0) @db.Decimal(12, 2)
+  isOpeningBalance Boolean          @default(false)
+  invoiceDate      DateTime
+  dueDate          DateTime?
+  financialYear    String
+  openingBalanceId String?          @unique
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  allocations      BillAllocation[]
+  openingBalance   OpeningBalance?  @relation(fields: [openingBalanceId], references: [id])
+
+  @@index([customerId])
+  @@index([financialYear])
+  @@index([customerId, financialYear])
+  @@index([isOpeningBalance])
+  @@map("bills")
+}
+
+model OpeningBalance {
+  id            String   @id @default(uuid())
+  referenceNo   String   @unique
+  customerId    String
+  customerName  String
+  amount        Decimal  @db.Decimal(12, 2)
+  narration     String?
+  asOfDate      DateTime
+  financialYear String
+  createdBy     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  bill          Bill?
+
+  @@index([customerId])
+  @@index([financialYear])
+  @@map("opening_balances")
+}
+
+model Voucher {
+  id              String           @id @default(uuid())
+  voucherId       String           @unique
+  customerId      String
+  type            VoucherType
+  totalAmount     Decimal          @db.Decimal(12, 2)
+  onAccountAmount Decimal          @default(0) @db.Decimal(12, 2)
+  paymentMethod   PaymentMethod
+  bankId          String?
+  bankName        String?
+  chequeNumber    String?
+  chequeDate      DateTime?
+  utrNumber       String?
+  upiRef          String?
+  reference       String?
+  narration       String?
+  voucherDate     DateTime
+  financialYear   String
+  createdBy       String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  allocations     BillAllocation[]
+  entries         VoucherEntry[]
+
+  @@index([customerId])
+  @@index([type])
+  @@index([bankId])
+  @@index([voucherDate])
+  @@index([customerId, voucherDate])
+  @@index([financialYear])
+  @@index([customerId, onAccountAmount])
+  @@map("vouchers")
+}
+
+model VoucherEntry {
+  id              String        @id @default(uuid())
+  voucherId       String
+  ledgerAccountId String
+  entryType       EntryType
+  amount          Decimal       @db.Decimal(12, 2)
+  narration       String?
+  createdAt       DateTime      @default(now())
+  voucher         Voucher       @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+  debitAccount    LedgerAccount @relation("DebitAccount", fields: [ledgerAccountId], references: [id], map: "voucher_entry_debit_fk")
+
+  @@index([voucherId])
+  @@index([ledgerAccountId])
+  @@map("voucher_entries")
+}
+
+model BillAllocation {
+  id              String   @id @default(uuid())
+  voucherId       String
+  billId          String?
+  customerId      String
+  allocatedAmount Decimal  @db.Decimal(12, 2)
+  narration       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  bill            Bill?    @relation(fields: [billId], references: [id], onDelete: Restrict)
+  voucher         Voucher  @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+
+  @@index([voucherId])
+  @@index([billId])
+  @@index([customerId])
+  @@index([customerId, billId])
+  @@map("bill_allocations")
+}
+
+model VoucherCounter {
+  id            String @id @default(uuid())
+  type          String
+  financialYear String
+  lastValue     Int    @default(0)
+
+  @@unique([type, financialYear])
+  @@map("voucher_counters")
+}
+
+enum LedgerAccountType {
+  ACCOUNTS_RECEIVABLE
+  BANK_CASH
+  SALES
 }
 
 enum VoucherType {
@@ -76,47 +178,15 @@ enum VoucherType {
   CONTRA
   JOURNAL
 }
-model TransactionAllocation {
-  id               String   @id @default(uuid())
-  transactionId    String
-  invoiceNumber    String
-  allocatedAmount  Decimal  @db.Decimal(10,2)
 
-  transaction Transaction @relation(fields: [transactionId], references: [id])
-
-  @@index([invoiceNumber])
+enum PaymentMethod {
+  NEFT_RTGS
+  CHEQUE
+  CASH
+  UPI
 }
-model CustomerLedger {
-  id              String   @id @default(uuid())
-  customerId      String
-  transactionId   String?
-  transactionDate DateTime
-  debit           Decimal  @db.Decimal(10, 2) @default(0)
-  credit          Decimal  @db.Decimal(10, 2) @default(0)
-  balanceAfter    Decimal  @db.Decimal(10, 2)
-  narration       String
-  referenceType   String?  // "TRANSACTION" | "INVOICE" | "OPENING_OUTSTANDING" | "ADJUSTMENT"
-  referenceId     String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
 
-  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-
-  @@index([customerId, transactionDate, createdAt])
-  @@index([customerId])
-  @@index([transactionDate])
-  @@index([transactionId])
-  @@index([referenceType, referenceId])
-  @@map("customer_ledger")
-}
-// Add to your schema for better tracking
-model TransactionLog {
-  id            String   @id @default(uuid())
-  transactionId String
-  action        String   // created, updated, deleted
-  changes       Json?    // Store what changed
-  userId        String?
-  timestamp     DateTime @default(now())
-  
-  @@index([transactionId])
+enum EntryType {
+  DEBIT
+  CREDIT
 }

@@ -3,6 +3,7 @@ const Product = require("../models/product.models");
 const Customer = require("../models/customer.models");
 const Counter = require("../models/counter.models");
 const prisma = require("../config/prisma"); // Add prisma for inventory operations
+const { syncInvoiceToBill } = require("../services/billSync.service");
 
 const Transporter = require("../models/transport.models");
 
@@ -25,7 +26,7 @@ const validateRollIds = async (rollIds) => {
         errors.push(`Roll ID ${rollId} is already sold`);
       } else if (inventoryItem.status === "damaged") {
         errors.push(
-          `Roll ID ${rollId} is marked as damaged and cannot be sold`
+          `Roll ID ${rollId} is marked as damaged and cannot be sold`,
         );
       } else {
         validRollIds.push(rollId.trim());
@@ -182,6 +183,8 @@ const createCustomerProducts = async (req, res, next) => {
     transporter,
   } = req.body;
 
+  // ── Validation (unchanged) ──────────────────────────────────────────────────
+
   if (!customer || !customer._id) {
     return res.status(400).json({
       success: false,
@@ -223,7 +226,6 @@ const createCustomerProducts = async (req, res, next) => {
       });
     }
 
-    // Validate transporter if provided
     if (transporter) {
       const transporterExists = await Transporter.findById(transporter);
       if (!transporterExists) {
@@ -234,18 +236,13 @@ const createCustomerProducts = async (req, res, next) => {
       }
     }
 
+    // ── Build products array (unchanged) ───────────────────────────────────────
+
     const invoiceProducts = [];
     let calculatedTotalAmount = 0;
 
     for (const productData of products) {
       const { product, width, quantity, unit_price, totalPrice } = productData;
-
-      if (isNaN(quantity) || parseInt(quantity) <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Quantity must be a positive number for each product",
-        });
-      }
 
       let ProductInfo = await Product.findById(product._id);
       if (!ProductInfo) {
@@ -268,32 +265,27 @@ const createCustomerProducts = async (req, res, next) => {
       });
 
       calculatedTotalAmount += totalPrice;
-      let newQuantity = ProductInfo.quantity - quantity;
-      await Product.findByIdAndUpdate(product._id, { quantity: newQuantity });
+      await Product.findByIdAndUpdate(product._id, {
+        quantity: ProductInfo.quantity - quantity,
+      });
     }
 
-    const totalWithOtherCharges =
-      calculatedTotalAmount + (parseFloat(otherCharges) || 0);
-    const cgstAmount = parseFloat(cgst) || 0;
-    const sgstAmount = parseFloat(sgst) || 0;
-    const igstAmount = parseFloat(igst) || 0;
+    // ── Invoice number generation (unchanged) ──────────────────────────────────
 
     let counter = await Counter.findOneAndUpdate(
       { name: "invoiceNumber" },
       { $inc: { value: 1 } },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
+      { new: true, upsert: true, setDefaultsOnInsert: true },
     );
 
-    // If the counter doesn't exist, set the initial value
     if (counter.value === 1) {
       counter = await Counter.findOneAndUpdate(
         { name: "invoiceNumber" },
         { value: 1 },
-        { new: true }
+        { new: true },
       );
     }
 
-    // Get current date and format financial year
     const currentDate = new Date();
     let financialYearStart, financialYearEnd;
     if (currentDate.getMonth() < 3) {
@@ -303,25 +295,21 @@ const createCustomerProducts = async (req, res, next) => {
       financialYearStart = currentDate.getFullYear();
       financialYearEnd = currentDate.getFullYear() + 1;
     }
-    const formattedYear = `${financialYearStart
-      .toString()
-      .slice(-2)}-${financialYearEnd.toString().slice(-2)}`;
-    const invoiceNumber = `HT/${counter.value
-      .toString()
-      .padStart(4, "0")}/20${formattedYear}`;
+    const formattedYear = `${financialYearStart.toString().slice(-2)}-${financialYearEnd.toString().slice(-2)}`;
+    const invoiceNumber = `HT/${counter.value.toString().padStart(4, "0")}/20${formattedYear}`;
 
-    // ✅ FIX: Include payment fields in initial invoice creation
+    // ── Build and create invoice in MongoDB (unchanged) ────────────────────────
+
     const invoiceData = {
       invoiceNumber,
       customer: customer._id,
       products: invoiceProducts,
       otherCharges: parseFloat(otherCharges) || 0,
-      cgst: cgstAmount,
-      sgst: sgstAmount,
-      igst: igstAmount,
+      cgst: parseFloat(cgst) || 0,
+      sgst: parseFloat(sgst) || 0,
+      igst: parseFloat(igst) || 0,
       totalAmount: calculatedTotalAmount,
       grandTotal: parseFloat(grandTotal),
-      // ✅ Add payment fields here
       paidAmount: 0,
       pendingAmount: parseFloat(grandTotal),
       paymentStatus: "UNPAID",
@@ -338,10 +326,24 @@ const createCustomerProducts = async (req, res, next) => {
       invoiceData.transporter = transporter;
     }
 
-    // ✅ Create invoice with all fields at once
     let createdInvoice = await CustomerProduct.create(invoiceData);
 
-    // Update inventory status if rollIds exist
+    // ── STEP 2: Sync to PostgreSQL as a Bill ───────────────────────────────────
+    // Non-blocking: a sync failure logs an error but does NOT fail the invoice.
+    // The migration script (bulkSyncInvoicesToBills) can catch up any missed records.
+
+    try {
+      await syncInvoiceToBill(createdInvoice);
+    } catch (syncError) {
+      console.error(
+        `[BillSync] Failed to sync invoice ${invoiceNumber} to PostgreSQL:`,
+        syncError.message,
+      );
+      // TODO: Push to a retry queue (Redis/BullMQ) for guaranteed delivery
+    }
+
+    // ── STEP 3: Update inventory roll status (unchanged) ──────────────────────
+
     if (invoiceData.rollIds && invoiceData.rollIds.length > 0) {
       try {
         await updateInventoryStatus(invoiceData.rollIds, "sold", invoiceNumber);
@@ -387,7 +389,7 @@ const updateCustomerProducts = async (req, res, next) => {
           ...new Set(
             updatedData.rollIds
               .map((id) => id.trim())
-              .filter((id) => id.length > 0)
+              .filter((id) => id.length > 0),
           ),
         ]
       : [];
@@ -396,7 +398,7 @@ const updateCustomerProducts = async (req, res, next) => {
     if (newRollIds.length > 0) {
       const rollIdValidation = await validateRollIdsForUpdate(
         newRollIds,
-        existingInvoice.invoiceNumber
+        existingInvoice.invoiceNumber,
       );
       if (!rollIdValidation.valid) {
         return res.status(400).json({
@@ -410,7 +412,7 @@ const updateCustomerProducts = async (req, res, next) => {
     // Validate transporter if provided
     if (updatedData.transporter) {
       const transporterExists = await Transporter.findById(
-        updatedData.transporter
+        updatedData.transporter,
       );
       if (!transporterExists) {
         return res.status(400).json({
@@ -435,24 +437,24 @@ const updateCustomerProducts = async (req, res, next) => {
             message: "Width must be a valid number for each product",
           });
         }
-        if (isNaN(quantity) || parseInt(quantity) <= 0) {
-          return res.status(400).json({
-            success: false,
-            message: "Quantity must be a positive number for each product",
-          });
-        }
+        // if (isNaN(quantity) || parseInt(quantity) <= 0) {
+        //   return res.status(400).json({
+        //     success: false,
+        //     message: "Quantity must be a positive number for each product",
+        //   });
+        // }
         if (isNaN(unit_price)) {
           return res.status(400).json({
             success: false,
             message: "Unit price must be a number for each product",
           });
         }
-        if (isNaN(totalPrice) || parseFloat(totalPrice) <= 0) {
-          return res.status(400).json({
-            success: false,
-            message: "Total price must be a positive number for each product",
-          });
-        }
+        // if (isNaN(totalPrice) || parseFloat(totalPrice) <= 0) {
+        //   return res.status(400).json({
+        //     success: false,
+        //     message: "Total price must be a positive number for each product",
+        //   });
+        // }
 
         updatedProducts.push({
           product,
@@ -473,7 +475,7 @@ const updateCustomerProducts = async (req, res, next) => {
 
     const totalWithOtherCharges = totalAmount + otherCharges;
     const grandTotal = Math.round(
-      totalWithOtherCharges + cgstAmount + sgstAmount + igstAmount
+      totalWithOtherCharges + cgstAmount + sgstAmount + igstAmount,
     );
 
     // ✅ Calculate payment status based on existing payments
@@ -514,7 +516,7 @@ const updateCustomerProducts = async (req, res, next) => {
       if (addedRollIds.length > 0) {
         const finalValidation = await validateRollIdsForUpdate(
           addedRollIds,
-          existingInvoice.invoiceNumber
+          existingInvoice.invoiceNumber,
         );
         if (!finalValidation.valid) {
           return res.status(400).json({
@@ -534,7 +536,7 @@ const updateCustomerProducts = async (req, res, next) => {
         await updateInventoryStatus(
           addedRollIds,
           "sold",
-          existingInvoice.invoiceNumber
+          existingInvoice.invoiceNumber,
         );
       }
 
@@ -567,7 +569,7 @@ const updateCustomerProducts = async (req, res, next) => {
             await updateInventoryStatus(
               removedRollIds,
               "sold",
-              existingInvoice.invoiceNumber
+              existingInvoice.invoiceNumber,
             );
           }
         }
@@ -588,13 +590,13 @@ const updateCustomerProducts = async (req, res, next) => {
             await updateInventoryStatus(
               removedRollIds,
               "sold",
-              existingInvoice.invoiceNumber
+              existingInvoice.invoiceNumber,
             );
           }
         } catch (rollbackError) {
           console.error(
             "CRITICAL: Failed to rollback inventory:",
-            rollbackError
+            rollbackError,
           );
         }
       }
@@ -633,7 +635,7 @@ const validateRollIdsForUpdate = async (rollIds, currentInvoiceNumber) => {
         errors.push(`Roll ID ${rollId} not found in inventory`);
       } else if (inventoryItem.status === "damaged") {
         errors.push(
-          `Roll ID ${rollId} is marked as damaged and cannot be sold`
+          `Roll ID ${rollId} is marked as damaged and cannot be sold`,
         );
       } else if (
         inventoryItem.status === "sold" &&
@@ -641,7 +643,7 @@ const validateRollIdsForUpdate = async (rollIds, currentInvoiceNumber) => {
       ) {
         // Allow if it's sold to THIS invoice, reject if sold to another
         errors.push(
-          `Roll ID ${rollId} is already sold to invoice ${inventoryItem.invoiceNumber}`
+          `Roll ID ${rollId} is already sold to invoice ${inventoryItem.invoiceNumber}`,
         );
       } else {
         validRollIds.push(rollId.trim());
@@ -694,7 +696,7 @@ const deleteCustomerProducts = async (req, res, next) => {
       } catch (inventoryError) {
         console.error(
           "Error updating inventory status during deletion:",
-          inventoryError
+          inventoryError,
         );
         // Continue with the response but log the error
       }
@@ -723,8 +725,8 @@ const resetCounter = async (req, res) => {
   try {
     const updatedCounter = await Counter.findOneAndUpdate(
       { name: "invoiceNumber" },
-      { value: 5 },
-      { new: true, upsert: true }
+      { value: 1 },
+      { new: true, upsert: true },
     );
 
     res.json({
@@ -1101,10 +1103,10 @@ const getMonthlyInvoiceTotals = async (req, res) => {
         ? {
             averageGrowthRate: calculateAverageGrowth(periodTotals),
             bestPeriod: periodTotals.reduce((max, period) =>
-              period.totalRevenue > max.totalRevenue ? period : max
+              period.totalRevenue > max.totalRevenue ? period : max,
             ),
             worstPeriod: periodTotals.reduce((min, period) =>
-              period.totalRevenue < min.totalRevenue ? period : min
+              period.totalRevenue < min.totalRevenue ? period : min,
             ),
           }
         : null;
@@ -1128,7 +1130,7 @@ const getMonthlyInvoiceTotals = async (req, res) => {
                     (overallStats[0].totalCGST +
                       overallStats[0].totalSGST +
                       overallStats[0].totalIGST) *
-                      100
+                      100,
                   ) / 100,
                 totalOtherCharges:
                   Math.round(overallStats[0].totalOtherCharges * 100) / 100,

@@ -49,7 +49,7 @@ router.put("/opening-outstanding/:id", updateOpeningOutstanding);
 router.delete("/opening-outstanding/:id", deleteOpeningOutstanding);
 router.get(
   "/customer/:customerId/pending-invoices",
-  getCustomerPendingInvoices
+  getCustomerPendingInvoices,
 );
 router.get("/invoice/:invoiceId/payments", getInvoicePayments);
 

@@ -1,5 +1,188 @@
+/**
+ * Ledger & Reporting Controller
+ * Mount at: /api/reports
+ */
+
 const CustomerProduct = require("../models/cust-prod.models");
 const Customer = require("../models/customer.models");
+const {
+  getCustomerLedger,
+  getOutstandingBillsReport,
+  getReceivablesSummary,
+  getAgeingAnalysis,
+  getBankwiseCollectionReport,
+} = require("../services/ledger.service");
+
+// ── GET /api/reports/ledger/:customerId ───────────────────────────────────────
+/**
+ * Full transaction history for one customer.
+ *
+ * Query params:
+ *   financialYear  "current" | "previous" | "2024-25"
+ *   startDate      "2025-04-01"   (overrides financialYear if provided)
+ *   endDate        "2026-03-31"
+ *   page           default 1
+ *   limit          default 50
+ *   sortOrder      "asc" | "desc"  default asc
+ */
+const customerLedger = async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const {
+      financialYear,
+      startDate,
+      endDate,
+      page = 1,
+      limit = 50,
+      sortOrder = "asc",
+    } = req.query;
+
+    const customer = await Customer.findById(customerId).lean();
+    if (!customer) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Customer not found" });
+    }
+
+    const result = await getCustomerLedger(customerId, {
+      financialYear,
+      startDate,
+      endDate,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      sortOrder,
+    });
+
+    return res.json({
+      success: true,
+      customer: {
+        id: customer._id,
+        name: customer.name,
+        email: customer.email,
+        phone: customer.phone,
+      },
+      ...result,
+    });
+  } catch (error) {
+    console.error("customerLedger error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── GET /api/reports/outstanding ──────────────────────────────────────────────
+/**
+ * All unpaid/partial bills across all customers (or one customer).
+ *
+ * Query params:
+ *   customerId     optional — filter to one customer
+ *   financialYear
+ *   startDate / endDate
+ *   page / limit
+ */
+const outstandingBills = async (req, res) => {
+  try {
+    const {
+      customerId,
+      financialYear,
+      startDate,
+      endDate,
+      page = 1,
+      limit = 50,
+    } = req.query;
+
+    const result = await getOutstandingBillsReport({
+      customerId,
+      financialYear,
+      startDate,
+      endDate,
+      page: parseInt(page),
+      limit: parseInt(limit),
+    });
+
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    console.error("outstandingBills error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── GET /api/reports/receivables ──────────────────────────────────────────────
+/**
+ * Bill-wise receivables summary per customer.
+ *
+ * Query params:
+ *   customerId     optional — scope to one customer
+ *   financialYear
+ *   startDate / endDate
+ */
+const receivablesSummary = async (req, res) => {
+  try {
+    const { customerId, financialYear, startDate, endDate } = req.query;
+
+    const result = await getReceivablesSummary({
+      customerId,
+      financialYear,
+      startDate,
+      endDate,
+    });
+
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    console.error("receivablesSummary error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── GET /api/reports/ageing ───────────────────────────────────────────────────
+/**
+ * Ageing analysis — outstanding bills bucketed by age.
+ *
+ * Query params:
+ *   customerId   optional — scope to one customer or all
+ *   asOfDate     "2025-05-26" — age calculated relative to this date (default today)
+ */
+const ageingAnalysis = async (req, res) => {
+  try {
+    const { customerId, asOfDate } = req.query;
+
+    const result = await getAgeingAnalysis({
+      customerId,
+      asOfDate: asOfDate ? new Date(asOfDate) : new Date(),
+    });
+
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    console.error("ageingAnalysis error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── GET /api/reports/bank-collection ─────────────────────────────────────────
+/**
+ * Receipts grouped by bank.
+ *
+ * Query params:
+ *   financialYear
+ *   startDate / endDate
+ *   customerId   optional
+ */
+const bankwiseCollection = async (req, res) => {
+  try {
+    const { customerId, financialYear, startDate, endDate } = req.query;
+
+    const result = await getBankwiseCollectionReport({
+      customerId,
+      financialYear,
+      startDate,
+      endDate,
+    });
+
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    console.error("bankwiseCollection error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
 
 /**
  * Get financial year date range
@@ -168,4 +351,9 @@ const getCustomerInvoicesByFinancialYear = async (req, res, next) => {
 module.exports = {
   getCustomerInvoicesByFinancialYear,
   getFinancialYearRange, // Export helper for reuse
+  customerLedger,
+  outstandingBills,
+  receivablesSummary,
+  ageingAnalysis,
+  bankwiseCollection,
 };

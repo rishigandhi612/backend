@@ -20,7 +20,7 @@ app.use(
     methods: ["GET", "POST", "PUT", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true, // Allow credentials (cookies, Authorization header, etc.)
-  })
+  }),
 );
 
 // For any OPTIONS request (pre-flight)
@@ -53,7 +53,7 @@ app.use(mongoSanitize());
 app.use(
   mongoSanitize({
     replaceWith: "_",
-  })
+  }),
 );
 
 app.get("/", (req, res) => {
@@ -100,6 +100,10 @@ const transactionRoutes = require("./routes/transaction.routes");
 app.use("/transaction", CheckAuth, transactionRoutes);
 const findStringRoutes = require("./routes/find-string.routes");
 app.use("/find-string", CheckAuth, findStringRoutes);
+const accountingRoutes = require("./routes/accounting.routes");
+app.use("/accounting", CheckAuth, accountingRoutes);
+const ledgerRoutes = require("./routes/ledger.routes");
+app.use("/reports", CheckAuth, ledgerRoutes);
 
 // Connect to MongoDB database
 connectDatabase();
@@ -119,5 +123,5 @@ connectDatabase();
 // Start the server with dynamic port from the .env file
 const port = process.env.PORT || 3001;
 app.listen(port, "0.0.0.0", () =>
-  console.log(`Server is running on port ${port}`)
+  console.log(`Server is running on port ${port}`),
 );

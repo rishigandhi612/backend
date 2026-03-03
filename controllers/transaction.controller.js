@@ -1,7 +1,6 @@
 const prisma = require("../config/prisma");
 const mongoose = require("mongoose");
 const Bank = require("../models/bank.models");
-const customer = require("../models/customer.models");
 const InvoiceMongo = require("../models/cust-prod.models");
 const {
   updateInvoicePaymentStatus,
@@ -35,6 +34,33 @@ const generateTransactionId = async () => {
 };
 
 /**
+ * Convert various date inputs into a safe JavaScript Date instance (ISO-8601 compatible)
+ * Accepts Date, number (timestamp), or string (YYYY-MM-DD or ISO string).
+ * Throws Error on invalid input.
+ */
+const toSafeDate = (input) => {
+  if (!input) return new Date();
+  if (input instanceof Date && !isNaN(input)) return input;
+  if (typeof input === "number") {
+    const d = new Date(input);
+    if (isNaN(d.getTime())) throw new Error("Invalid date");
+    return d;
+  }
+  if (typeof input === "string") {
+    // If only date part provided (YYYY-MM-DD), treat as UTC start of day
+    if (/^\d{4}-\d{2}-\d{2}$/.test(input)) {
+      const d = new Date(`${input}T00:00:00.000Z`);
+      if (isNaN(d.getTime())) throw new Error("Invalid date");
+      return d;
+    }
+    const d = new Date(input);
+    if (isNaN(d.getTime())) throw new Error("Invalid date");
+    return d;
+  }
+  throw new Error("Invalid date");
+};
+
+/**
  * Validate allocations
  */
 const validateAllocations = async (allocations, totalAmount, customerId) => {
@@ -51,13 +77,13 @@ const validateAllocations = async (allocations, totalAmount, customerId) => {
 
   const difference = Math.abs(allocationSum - parseFloat(totalAmount));
 
-  if (difference > 0.0) {
+  if (difference > 0.01) {
     errors.push(
       `Allocation sum (${allocationSum.toFixed(
-        2
+        2,
       )}) does not match total amount (${parseFloat(totalAmount).toFixed(
-        2
-      )}). Difference: ${difference.toFixed(2)}`
+        2,
+      )}). Difference: ${difference.toFixed(2)}`,
     );
     return { valid: false, errors };
   }
@@ -88,10 +114,10 @@ const validateAllocations = async (allocations, totalAmount, customerId) => {
     if (allocationAmount > pendingAmount + 0.01) {
       errors.push(
         `Allocation ${allocationAmount.toFixed(
-          2
+          2,
         )} exceeds pending amount ${pendingAmount.toFixed(
-          2
-        )} for invoice ${invoiceNumber}`
+          2,
+        )} for invoice ${invoiceNumber}`,
       );
     }
   }
@@ -119,7 +145,6 @@ exports.createTransaction = async (req, res) => {
         remarks,
         createdBy,
       } = req.body;
-      console.log("create transaction", req.body);
 
       // Validation
       if (!customerId || !bankId || !transactionType || !totalAmount) {
@@ -142,19 +167,19 @@ exports.createTransaction = async (req, res) => {
       if (transactionType === "AGAINST_REF") {
         if (!allocations || allocations.length === 0) {
           throw new Error(
-            "Allocations required for AGAINST_REF transaction type"
+            "Allocations required for AGAINST_REF transaction type",
           );
         }
 
         const validation = await validateAllocations(
           allocations,
           totalAmount,
-          customerId
+          customerId,
         );
 
         if (!validation.valid) {
           throw new Error(
-            `Allocation validation failed: ${validation.errors.join(", ")}`
+            `Allocation validation failed: ${validation.errors.join(", ")}`,
           );
         }
       }
@@ -168,22 +193,18 @@ exports.createTransaction = async (req, res) => {
         const validation = await validateAllocations(
           allocations,
           totalAmount,
-          customerId
+          customerId,
         );
 
         if (!validation.valid) {
           throw new Error(
-            `Allocation validation failed: ${validation.errors.join(", ")}`
+            `Allocation validation failed: ${validation.errors.join(", ")}`,
           );
         }
       }
 
       // Generate transaction ID
       const transactionId = await generateTransactionId();
-
-      const safeTransactionDate = transactionDate
-        ? new Date(transactionDate) // works for "2025-05-17" or "2025-05-17 16:56:59"
-        : new Date();
 
       // Create transaction
       const transaction = await tx.transaction.create({
@@ -193,9 +214,9 @@ exports.createTransaction = async (req, res) => {
           bankId,
           bankName: bank.name,
           transactionType,
-          voucherType, // ISO string Prisma accepts,
-          transactionDate: safeTransactionDate, // ISO string Prisma accepts,
+          voucherType,
           totalAmount: parseFloat(totalAmount),
+          transactionDate: toSafeDate(transactionDate),
           paymentMethod,
           paymentStatus: "completed",
           reference,
@@ -252,6 +273,7 @@ exports.createTransaction = async (req, res) => {
           debit,
           credit,
           balanceAfter: newBalance,
+          transactionDate: transaction.transactionDate,
           narration: `${voucherType} - ${transactionId}${
             allocations.length > 0
               ? ` - Allocated to ${allocations.length} invoice(s): ${allocations
@@ -306,7 +328,186 @@ exports.createTransaction = async (req, res) => {
     });
   }
 };
+/**
+ * Get invoices based on transaction type and filters
+ * GET /api/transactions/invoices-by-type
+ *
+ * Query params:
+ * - customerId (required): Customer ID
+ * - transactionDate (required): Transaction date (YYYY-MM-DD or ISO string)
+ * - transactionType (required): AGAINST_REF | ON_ACCOUNT | ADVANCE | REFUND
+ */
+exports.getInvoicesByTransactionType = async (req, res) => {
+  try {
+    const { customerId, transactionDate, transactionType } = req.query;
 
+    // Validation
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: "customerId is required",
+      });
+    }
+
+    if (!transactionDate) {
+      return res.status(400).json({
+        success: false,
+        message: "transactionDate is required",
+      });
+    }
+
+    if (!transactionType) {
+      return res.status(400).json({
+        success: false,
+        message: "transactionType is required",
+      });
+    }
+
+    // Validate transaction type
+    const validTypes = ["AGAINST_REF", "ON_ACCOUNT", "ADVANCE", "REFUND"];
+    if (!validTypes.includes(transactionType)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid transactionType. Must be one of: ${validTypes.join(
+          ", ",
+        )}`,
+      });
+    }
+
+    // Validate customer exists
+    if (!mongoose.Types.ObjectId.isValid(customerId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid customerId format",
+      });
+    }
+
+    const customerExists = await InvoiceMongo.findOne({
+      customer: customerId,
+    });
+
+    if (!customerExists) {
+      return res.status(404).json({
+        success: false,
+        message: "No invoices found for this customer",
+      });
+    }
+
+    // Parse transaction date
+    let txnDate;
+    try {
+      txnDate = toSafeDate(transactionDate);
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid transactionDate format. Use YYYY-MM-DD or ISO string",
+      });
+    }
+
+    let invoices = [];
+    let filter = { customer: customerId };
+    let message = "";
+
+    switch (transactionType) {
+      case "AGAINST_REF":
+        // Return all unsettled invoices till that date
+        filter.createdAt = { $lte: txnDate };
+        filter.$or = [
+          { paymentStatus: "UNPAID" },
+          { paymentStatus: "PARTIAL" },
+        ];
+
+        invoices = await InvoiceMongo.find(filter)
+          .populate("customer")
+          .populate("products.product")
+          .populate("transporter")
+          .sort({ createdAt: -1 })
+          .lean();
+
+        message = `Found ${invoices.length} unsettled invoice(s) up to ${transactionDate}`;
+        break;
+
+      case "ON_ACCOUNT":
+        // Return nothing (empty array)
+        invoices = [];
+        message = "ON_ACCOUNT transactions don't require invoice allocation";
+        break;
+
+      case "ADVANCE":
+        // Return invoices after the transaction date (if any)
+        filter.createdAt = { $gt: txnDate };
+
+        invoices = await InvoiceMongo.find(filter)
+          .populate("customer")
+          .populate("products.product")
+          .populate("transporter")
+          .sort({ createdAt: 1 })
+          .lean();
+
+        message = `Found ${invoices.length} invoice(s) after ${transactionDate}`;
+        break;
+
+      case "REFUND":
+        // Return all invoices for the customer
+        invoices = await InvoiceMongo.find(filter)
+          .populate("customer")
+          .populate("products.product")
+          .populate("transporter")
+          .sort({ createdAt: -1 })
+          .lean();
+
+        message = `Found ${invoices.length} total invoice(s) for refund`;
+        break;
+
+      default:
+        return res.status(400).json({
+          success: false,
+          message: "Invalid transaction type",
+        });
+    }
+
+    // Add additional payment details to each invoice
+    const enrichedInvoices = invoices.map((invoice) => ({
+      ...invoice,
+      availableForAllocation: invoice.pendingAmount || 0,
+      paymentHistory: {
+        paid: invoice.paidAmount || 0,
+        pending: invoice.pendingAmount || 0,
+        total: invoice.grandTotal || 0,
+      },
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        transactionType,
+        transactionDate: txnDate,
+        customerId,
+        invoiceCount: enrichedInvoices.length,
+        invoices: enrichedInvoices,
+        summary: {
+          totalInvoices: enrichedInvoices.length,
+          totalPending: enrichedInvoices.reduce(
+            (sum, inv) => sum + (inv.pendingAmount || 0),
+            0,
+          ),
+          totalAmount: enrichedInvoices.reduce(
+            (sum, inv) => sum + (inv.grandTotal || 0),
+            0,
+          ),
+        },
+      },
+      message,
+    });
+  } catch (error) {
+    console.error("Get invoices by transaction type error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch invoices",
+      error: error.message,
+    });
+  }
+};
 /**
  * Update transaction
  * PUT /api/transactions/:id
@@ -344,7 +545,7 @@ exports.updateTransaction = async (req, res) => {
         for (const oldAlloc of existingTransaction.allocations) {
           await reverseInvoicePayment(
             oldAlloc.invoiceNumber,
-            oldAlloc.allocatedAmount.toString()
+            oldAlloc.allocatedAmount.toString(),
           );
         }
 
@@ -357,12 +558,12 @@ exports.updateTransaction = async (req, res) => {
         const validation = await validateAllocations(
           allocations,
           totalAmount || existingTransaction.totalAmount.toString(),
-          existingTransaction.customerId
+          existingTransaction.customerId,
         );
 
         if (!validation.valid) {
           throw new Error(
-            `Allocation validation failed: ${validation.errors.join(", ")}`
+            `Allocation validation failed: ${validation.errors.join(", ")}`,
           );
         }
 
@@ -386,7 +587,7 @@ exports.updateTransaction = async (req, res) => {
       if (totalAmount !== undefined)
         updateData.totalAmount = parseFloat(totalAmount);
       if (transactionDate)
-        updateData.transactionDate = new Date(transactionDate);
+        updateData.transactionDate = toSafeDate(transactionDate);
       if (paymentMethod) updateData.paymentMethod = paymentMethod;
       if (paymentStatus) updateData.paymentStatus = paymentStatus;
       if (reference !== undefined) updateData.reference = reference;
@@ -454,7 +655,7 @@ exports.deleteTransaction = async (req, res) => {
       for (const alloc of transaction.allocations) {
         await reverseInvoicePayment(
           alloc.invoiceNumber,
-          alloc.allocatedAmount.toString()
+          alloc.allocatedAmount.toString(),
         );
       }
 
@@ -537,7 +738,7 @@ exports.getTransactionById = async (req, res) => {
           ...alloc,
           invoiceDetails: invoice,
         };
-      })
+      }),
     );
 
     res.status(200).json({
@@ -588,8 +789,8 @@ exports.getTransactions = async (req, res) => {
 
     if (startDate || endDate) {
       where.transactionDate = {};
-      if (startDate) where.transactionDate.gte = new Date(startDate);
-      if (endDate) where.transactionDate.lte = new Date(endDate);
+      if (startDate) where.transactionDate.gte = toSafeDate(startDate);
+      if (endDate) where.transactionDate.lte = toSafeDate(endDate);
     }
 
     if (search) {
@@ -677,8 +878,8 @@ exports.getTransactionSummary = async (req, res) => {
     const where = {};
     if (startDate || endDate) {
       where.transactionDate = {};
-      if (startDate) where.transactionDate.gte = new Date(startDate);
-      if (endDate) where.transactionDate.lte = new Date(endDate);
+      if (startDate) where.transactionDate.gte = toSafeDate(startDate);
+      if (endDate) where.transactionDate.lte = toSafeDate(endDate);
     }
     if (bankId) where.bankId = bankId;
     if (customerId) where.customerId = customerId;
