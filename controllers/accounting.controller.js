@@ -204,9 +204,18 @@ const getBills = async (req, res) => {
 
     const totalPending = bills.reduce((s, b) => s + b.pendingAmount, 0);
 
+    const shaped = bills.map((b) => ({
+      id: b.id, // ← Prisma UUID, this is what was missing
+      invoiceDate: b.invoiceDate,
+      invoiceno: b.invoiceNumber ?? b.mongoInvoiceId ?? null,
+      mongoInvoiceId: b.mongoInvoiceId ?? null,
+      allocatedAmount: b.allocatedAmount,
+      pendingAmount: b.pendingAmount,
+      openingAmount: b.billAmount,
+    }));
     return res.json({
       success: true,
-      data: bills,
+      data: shaped,
       summary: {
         total: bills.length,
         totalPending: Math.round(totalPending * 100) / 100,

@@ -64,13 +64,18 @@ const generateVoucherId = async (type, financialYear, tx) => {
 
   const shortFY = financialYear.slice(2);
 
-  const counter = await tx.voucherCounter.upsert({
-    where: { type_financialYear: { type: prefix, financialYear } },
-    update: { lastValue: { increment: 1 } },
-    create: { type: prefix, financialYear, lastValue: 1 },
-  });
+  // Increment and read in one atomic query — no separate findUnique needed
+  const result = await tx.$queryRaw`
+    INSERT INTO "voucher_counters" (id, type, "financialYear", "lastValue")
+    VALUES (gen_random_uuid(), ${prefix}, ${financialYear}, 1)
+    ON CONFLICT (type, "financialYear")
+    DO UPDATE SET "lastValue" = "voucher_counters"."lastValue" + 1
+    RETURNING "lastValue"
+  `;
 
-  return `${prefix}/${String(counter.lastValue).padStart(4, "0")}/${shortFY}`;
+  const lastValue = result[0].lastValue;
+
+  return `${prefix}/${String(lastValue).padStart(4, "0")}/${shortFY}`;
 };
 
 const generateOpeningBalanceRef = async (financialYear, tx) => {
@@ -234,6 +239,7 @@ const createReceipt = async (params) => {
 
   if (billIds.length > 0) {
     const bills = await prisma.bill.findMany({
+      // ← this line was replaced by mistake
       where: { id: { in: billIds } },
     });
 

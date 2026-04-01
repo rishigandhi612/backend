@@ -33,21 +33,57 @@ const syncInvoiceToBill = async (invoice) => {
   const invoiceDate = invoice.createdAt ?? new Date();
   const financialYear = getFinancialYear(invoiceDate);
 
-  return prisma.bill.upsert({
-    where: { invoiceNumber: invoice.invoiceNumber },
-    update: {
-      // Keep billAmount in sync if invoice was amended before sync completed
-      billAmount,
-      mongoInvoiceId: invoice._id.toString(),
-      invoiceDate,
-      financialYear,
-    },
-    create: {
-      mongoInvoiceId: invoice._id.toString(),
-      invoiceNumber: invoice.invoiceNumber,
+  // Determine allocatedAmount from Mongo's paidAmount if available
+  const allocatedFromMongo = parseFloat(invoice.paidAmount ?? 0) || 0;
+
+  const invoiceNumber = invoice.invoiceNumber;
+  const mongoId = invoice._id.toString();
+
+  // Try to find an existing Bill by invoiceNumber first
+  const existingByInvoiceNumber = await prisma.bill.findUnique({
+    where: { invoiceNumber },
+  });
+
+  if (existingByInvoiceNumber) {
+    return prisma.bill.update({
+      where: { id: existingByInvoiceNumber.id },
+      data: {
+        billAmount,
+        mongoInvoiceId: mongoId,
+        invoiceDate,
+        financialYear,
+        // allocatedAmount: allocatedFromMongo,
+      },
+    });
+  }
+
+  // If not found by invoiceNumber, check if a Bill already exists with this mongoInvoiceId
+  const existingByMongoId = await prisma.bill.findUnique({
+    where: { mongoInvoiceId: mongoId },
+  });
+
+  if (existingByMongoId) {
+    // Update existing record (ensure invoiceNumber is set)
+    return prisma.bill.update({
+      where: { id: existingByMongoId.id },
+      data: {
+        invoiceNumber,
+        billAmount,
+        invoiceDate,
+        financialYear,
+        // allocatedAmount: allocatedFromMongo,
+      },
+    });
+  }
+
+  // Neither exists — create a new Bill
+  return prisma.bill.create({
+    data: {
+      mongoInvoiceId: mongoId,
+      invoiceNumber,
       customerId: invoice.customer.toString(),
       billAmount,
-      allocatedAmount: 0, // no payments yet
+      // allocatedAmount: allocatedFromMongo,
       isOpeningBalance: false,
       invoiceDate,
       financialYear,

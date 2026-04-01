@@ -296,7 +296,7 @@ const createCustomerProducts = async (req, res, next) => {
       financialYearEnd = currentDate.getFullYear() + 1;
     }
     const formattedYear = `${financialYearStart.toString().slice(-2)}-${financialYearEnd.toString().slice(-2)}`;
-    const invoiceNumber = `HT/${counter.value.toString().padStart(4, "0")}/20${formattedYear}`;
+    const invoiceNumber = `HT/${counter.value.toString().padStart(4, "0")}/${formattedYear}`;
 
     // ── Build and create invoice in MongoDB (unchanged) ────────────────────────
 
@@ -578,6 +578,16 @@ const updateCustomerProducts = async (req, res, next) => {
           success: false,
           message: "CustomerProduct not found",
         });
+      }
+
+      // Sync the updated invoice to PostgreSQL (best-effort)
+      try {
+        await syncInvoiceToBill(response);
+      } catch (syncError) {
+        console.error(
+          `[BillSync] Failed to sync updated invoice ${response.invoiceNumber} to PostgreSQL:`,
+          syncError.message,
+        );
       }
     } catch (invoiceError) {
       // Rollback inventory changes
