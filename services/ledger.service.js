@@ -20,6 +20,12 @@ const prisma = require("../config/prisma");
 
 const toFloat = (val) => parseFloat(parseFloat(val ?? 0).toFixed(2));
 
+const getBalanceType = (balance) => {
+  if (balance > 0) return "RECEIVABLE";
+  if (balance < 0) return "PAYABLE";
+  return "SETTLED";
+};
+
 const computeBillStatus = (billAmount, allocatedAmount) => {
   const bill = toFloat(billAmount);
   const allocated = toFloat(allocatedAmount);
@@ -84,6 +90,76 @@ const daysDiff = (from, to = new Date()) => {
   return Math.floor((to - new Date(from)) / (1000 * 60 * 60 * 24));
 };
 
+const getCustomerOpeningContext = async (customerId, startDate, endDate) => {
+  const [previousBills, previousReceipts, previousPayments, currentOpeningBills] =
+    await Promise.all([
+      prisma.bill.aggregate({
+        where: {
+          customerId,
+          invoiceDate: { lt: startDate },
+        },
+        _sum: { billAmount: true },
+        _count: { id: true },
+      }),
+      prisma.voucher.aggregate({
+        where: {
+          customerId,
+          type: "RECEIPT",
+          voucherDate: { lt: startDate },
+        },
+        _sum: { totalAmount: true },
+        _count: { id: true },
+      }),
+      prisma.voucher.aggregate({
+        where: {
+          customerId,
+          type: "PAYMENT",
+          voucherDate: { lt: startDate },
+        },
+        _sum: { totalAmount: true },
+        _count: { id: true },
+      }),
+      prisma.bill.findMany({
+        where: {
+          customerId,
+          isOpeningBalance: true,
+          invoiceDate: { gte: startDate, lte: endDate },
+        },
+        orderBy: { invoiceDate: "asc" },
+      }),
+    ]);
+
+  const previousBillsTotal = toFloat(previousBills._sum.billAmount ?? 0);
+  const previousReceiptsTotal = toFloat(previousReceipts._sum.totalAmount ?? 0);
+  const previousPaymentsTotal = toFloat(previousPayments._sum.totalAmount ?? 0);
+  const previousActivityCount =
+    previousBills._count.id +
+    previousReceipts._count.id +
+    previousPayments._count.id;
+  const broughtForwardBalance = toFloat(
+    previousBillsTotal + previousPaymentsTotal - previousReceiptsTotal,
+  );
+  const storedOpeningBalance = toFloat(
+    currentOpeningBills.reduce((sum, bill) => sum + toFloat(bill.billAmount), 0),
+  );
+  const hasPreviousActivity = previousActivityCount > 0;
+
+  return {
+    hasPreviousActivity,
+    broughtForwardBalance,
+    storedOpeningBalance,
+    currentOpeningBills,
+    openingBalance: hasPreviousActivity
+      ? broughtForwardBalance
+      : storedOpeningBalance,
+    openingSource: hasPreviousActivity
+      ? "PREVIOUS_CLOSING_BALANCE"
+      : currentOpeningBills.length > 0
+        ? "OPENING_BALANCE_TABLE"
+        : "NONE",
+  };
+};
+
 // ── 1. Customer Ledger ─────────────────────────────────────────────────────────
 
 /**
@@ -103,11 +179,19 @@ const daysDiff = (from, to = new Date()) => {
 const getCustomerLedger = async (customerId, opts = {}) => {
   const { page = 1, limit = 50, sortOrder = "asc" } = opts;
   const { startDate, endDate } = resolveDateRange(opts);
+  const openingContext = await getCustomerOpeningContext(
+    customerId,
+    startDate,
+    endDate,
+  );
 
   // Fetch bills (debit side — what customer owes)
   const bills = await prisma.bill.findMany({
     where: {
       customerId,
+      ...(openingContext.hasPreviousActivity
+        ? { isOpeningBalance: false }
+        : {}),
       invoiceDate: { gte: startDate, lte: endDate },
     },
     orderBy: { invoiceDate: "asc" },
@@ -131,6 +215,25 @@ const getCustomerLedger = async (customerId, opts = {}) => {
   // ── Build ledger entries ───────────────────────────────────────────────────
 
   const entries = [];
+
+  if (openingContext.hasPreviousActivity && openingContext.openingBalance !== 0) {
+    const openingBalance = openingContext.openingBalance;
+    entries.push({
+      date: startDate,
+      type: "OPENING_BALANCE",
+      referenceNumber: "B/F",
+      referenceId: null,
+      voucherId: null,
+      description: "Opening Balance — Brought Forward",
+      debit: openingBalance > 0 ? toFloat(openingBalance) : 0,
+      credit: openingBalance < 0 ? toFloat(Math.abs(openingBalance)) : 0,
+      balance: 0,
+      details: {
+        source: openingContext.openingSource,
+        openingBalance,
+      },
+    });
+  }
 
   // Bills → DEBIT entries
   for (const bill of bills) {
@@ -217,15 +320,13 @@ const getCustomerLedger = async (customerId, opts = {}) => {
   const closingBalance = toFloat(totalDebit - totalCredit);
 
   const summary = {
+    openingBalance: toFloat(openingContext.openingBalance),
+    openingBalanceType: getBalanceType(openingContext.openingBalance),
+    openingBalanceSource: openingContext.openingSource,
     totalDebit: toFloat(totalDebit),
     totalCredit: toFloat(totalCredit),
     closingBalance,
-    balanceType:
-      closingBalance > 0
-        ? "RECEIVABLE"
-        : closingBalance < 0
-          ? "PAYABLE"
-          : "SETTLED",
+    balanceType: getBalanceType(closingBalance),
     totalEntries: entries.length,
     dateRange: { startDate, endDate },
   };

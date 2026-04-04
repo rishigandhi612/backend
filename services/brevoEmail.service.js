@@ -12,14 +12,14 @@ const sendEmailWithAttachment = async (
   to,
   subject,
   htmlContent,
-  attachments
+  attachments,
 ) => {
   const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
 
   sendSmtpEmail.subject = subject;
   sendSmtpEmail.to = [{ email: to }];
   sendSmtpEmail.sender = {
-    name: "Hemant Traders Sales",
+    name: "Hemant Traders",
     email: "rishigandhi021@gmail.com",
   };
   sendSmtpEmail.htmlContent = htmlContent;
