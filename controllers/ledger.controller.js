@@ -38,6 +38,8 @@ const customerLedger = async (req, res) => {
     } = req.query;
 
     const customer = await Customer.findById(customerId).lean();
+    // console.log("customer", customer);
+
     if (!customer) {
       return res
         .status(404)
@@ -58,8 +60,9 @@ const customerLedger = async (req, res) => {
       customer: {
         id: customer._id,
         name: customer.name,
-        email: customer.email,
-        phone: customer.phone,
+        email: customer.email_id,
+        gstin: customer.gstin,
+        phone: customer.phone_no,
       },
       ...result,
     });

@@ -12,6 +12,7 @@
 
 const prisma = require("../config/prisma");
 const Bank = require("../models/bank.models"); // MongoDB Bank model
+const { enrichBillsWithPostedNotes } = require("./invoiceNote.service");
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -23,6 +24,15 @@ const getFinancialYear = (date = new Date()) => {
 };
 
 const toFloat = (val) => parseFloat(parseFloat(val).toFixed(2));
+
+const VOUCHER_DETAIL_INCLUDE = {
+  entries: {
+    include: {
+      debitAccount: true,
+    },
+  },
+  allocations: { include: { bill: true } },
+};
 
 /**
  * Compute bill status from billAmount and allocatedAmount.
@@ -44,6 +54,8 @@ const computeBillStatus = (billAmount, allocatedAmount) => {
  */
 const hydrateBill = (bill) => ({
   ...bill,
+  billAmount: toFloat(bill.billAmount),
+  allocatedAmount: toFloat(bill.allocatedAmount),
   pendingAmount: toFloat(bill.billAmount) - toFloat(bill.allocatedAmount),
   status: computeBillStatus(bill.billAmount, bill.allocatedAmount),
 });
@@ -158,6 +170,87 @@ const recalculateVoucherOnAccount = async (voucherId, tx) => {
     where: { id: voucherId },
     data: { onAccountAmount: toFloat(agg._sum.allocatedAmount ?? 0) },
   });
+};
+
+const hydrateVoucher = (voucher) => ({
+  ...voucher,
+  allocations: voucher.allocations.map((a) => ({
+    ...a,
+    bill: a.bill ? hydrateBill(a.bill) : null,
+  })),
+});
+
+const getVoucherWithDetails = async (where) => {
+  const fullVoucher = await prisma.voucher.findUnique({
+    where,
+    include: VOUCHER_DETAIL_INCLUDE,
+  });
+
+  if (!fullVoucher) {
+    const whereLabel = Object.entries(where)
+      .map(([key, value]) => `${key}=${value}`)
+      .join(", ");
+    throw new Error(`Voucher not found (${whereLabel})`);
+  }
+
+  return hydrateVoucher(fullVoucher);
+};
+
+const getReceiptById = async (voucherId) => {
+  if (!voucherId) throw new Error("voucherId is required");
+
+  const voucher = await getVoucherWithDetails({ voucherId });
+
+  if (voucher.type !== "RECEIPT") {
+    throw new Error(`Receipt ${voucherId} not found`);
+  }
+
+  return voucher;
+};
+
+const updateReceipt = async () => {
+  throw new Error("Receipt editing is not supported yet");
+};
+
+const deleteReceipt = async (voucherRef) => {
+  if (!voucherRef) throw new Error("voucherId is required");
+
+  const where = voucherRef.includes("/")
+    ? { voucherId: voucherRef }
+    : { id: voucherRef };
+  const voucher = await getVoucherWithDetails(where);
+
+  if (voucher.type !== "RECEIPT") {
+    throw new Error(
+      `Only receipt vouchers can be deleted via this endpoint (${voucher.voucherId})`,
+    );
+  }
+
+  const affectedBillIds = [
+    ...new Set(
+      voucher.allocations
+        .map((allocation) => allocation.billId)
+        .filter(Boolean),
+    ),
+  ];
+
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.voucher.delete({
+        where: { id: voucher.id },
+      });
+
+      for (const billId of affectedBillIds) {
+        await recalculateBillAllocated(billId, tx);
+      }
+    },
+    {
+      maxWait: 10000,
+      timeout: 15000,
+    },
+  );
+
+  return voucher;
 };
 
 // ── Create Receipt ─────────────────────────────────────────────────────────────
@@ -277,94 +370,85 @@ const createReceipt = async (params) => {
 
   // ── Atomic transaction ─────────────────────────────────────────────────────
 
-  const result = await prisma.$transaction(async (tx) => {
-    const voucherId = await generateVoucherId("RECEIPT", financialYear, tx);
+  const createdVoucher = await prisma.$transaction(
+    async (tx) => {
+      const voucherId = await generateVoucherId("RECEIPT", financialYear, tx);
 
-    // 1. Create Voucher
-    const voucher = await tx.voucher.create({
-      data: {
-        voucherId,
-        customerId,
-        type: "RECEIPT",
-        totalAmount: amount,
-        onAccountAmount: 0, // updated after allocations
-        paymentMethod,
-        bankId: resolvedBankId,
-        bankName: bankName ?? null,
-        chequeNumber: chequeNumber ?? null,
-        chequeDate: chequeDate ?? null,
-        utrNumber: utrNumber ?? null,
-        upiRef: upiRef ?? null,
-        reference: reference ?? null,
-        narration: narration ?? null,
-        voucherDate: new Date(voucherDate),
-        financialYear,
-        createdBy: createdBy ?? null,
-      },
-    });
-
-    // 2. Double-entry: Dr Bank/Cash, Cr AR
-    await tx.voucherEntry.createMany({
-      data: [
-        {
-          voucherId: voucher.id,
-          ledgerAccountId: bankAccount.id,
-          entryType: "DEBIT",
-          amount,
-          narration: `Receipt ${voucherId}`,
+      // 1. Create Voucher
+      const voucher = await tx.voucher.create({
+        data: {
+          voucherId,
+          customerId,
+          type: "RECEIPT",
+          totalAmount: amount,
+          onAccountAmount: 0, // updated after allocations
+          paymentMethod,
+          bankId: resolvedBankId,
+          bankName: bankName ?? null,
+          chequeNumber: chequeNumber ?? null,
+          chequeDate: chequeDate ? new Date(chequeDate) : null,
+          utrNumber: utrNumber ?? null,
+          upiRef: upiRef ?? null,
+          reference: reference ?? null,
+          narration: narration ?? null,
+          voucherDate: new Date(voucherDate),
+          financialYear,
+          createdBy: createdBy ?? null,
         },
-        {
-          voucherId: voucher.id,
-          ledgerAccountId: arAccount.id,
-          entryType: "CREDIT",
-          amount,
-          narration: `Receipt ${voucherId}`,
-        },
-      ],
-    });
+      });
 
-    // 3. Bill allocations
-    await tx.billAllocation.createMany({
-      data: finalAllocations.map((a) => ({
-        voucherId: voucher.id,
-        billId: a.billId ?? null,
-        customerId,
-        allocatedAmount: toFloat(a.allocatedAmount),
-        narration: a.narration ?? null,
-      })),
-    });
-
-    // 4. Recalculate allocatedAmount on each affected Bill
-    for (const billId of [...new Set(billIds)]) {
-      await recalculateBillAllocated(billId, tx);
-    }
-
-    // 5. Update onAccountAmount on Voucher
-    await recalculateVoucherOnAccount(voucher.id, tx);
-
-    // 6. Return full voucher with hydrated bills
-    const fullVoucher = await tx.voucher.findUnique({
-      where: { id: voucher.id },
-      include: {
-        entries: {
-          include: {
-            debitAccount: true, // this is the relation name for the ledger account
+      // 2. Double-entry: Dr Bank/Cash, Cr AR
+      await tx.voucherEntry.createMany({
+        data: [
+          {
+            voucherId: voucher.id,
+            ledgerAccountId: bankAccount.id,
+            entryType: "DEBIT",
+            amount,
+            narration: `Receipt ${voucherId}`,
           },
-        },
-        allocations: { include: { bill: true } },
-      },
-    });
+          {
+            voucherId: voucher.id,
+            ledgerAccountId: arAccount.id,
+            entryType: "CREDIT",
+            amount,
+            narration: `Receipt ${voucherId}`,
+          },
+        ],
+      });
 
-    return {
-      ...fullVoucher,
-      allocations: fullVoucher.allocations.map((a) => ({
-        ...a,
-        bill: a.bill ? hydrateBill(a.bill) : null,
-      })),
-    };
-  });
+      // 3. Bill allocations
+      await tx.billAllocation.createMany({
+        data: finalAllocations.map((a) => ({
+          voucherId: voucher.id,
+          billId: a.billId ?? null,
+          customerId,
+          allocatedAmount: toFloat(a.allocatedAmount),
+          narration: a.narration ?? null,
+        })),
+      });
 
-  return result;
+      // 4. Recalculate allocatedAmount on each affected Bill
+      for (const billId of [...new Set(billIds)]) {
+        await recalculateBillAllocated(billId, tx);
+      }
+
+      // 5. Update onAccountAmount on Voucher
+      const updatedVoucher = await recalculateVoucherOnAccount(voucher.id, tx);
+
+      return {
+        id: voucher.id,
+        voucherId: voucher.voucherId,
+        onAccountAmount: updatedVoucher.onAccountAmount,
+      };
+    },
+    {
+      maxWait: 10000,
+      timeout: 15000,
+    },
+  );
+
+  return getVoucherWithDetails({ id: createdVoucher.id });
 };
 
 // ── Apply On-Account to a Bill ────────────────────────────────────────────────
@@ -502,7 +586,7 @@ const getCustomerBills = async (customerId, opts = {}) => {
     where,
     orderBy: { invoiceDate: "asc" },
   });
-  const hydrated = bills.map(hydrateBill);
+  const hydrated = await enrichBillsWithPostedNotes(bills);
 
   if (status && status.length > 0) {
     return hydrated.filter((b) => status.includes(b.status));
@@ -560,6 +644,9 @@ module.exports = {
   createReceipt,
   createOpeningBalance,
   applyOnAccountToBill,
+  getReceiptById,
+  updateReceipt,
+  deleteReceipt,
   getCustomerBills,
   getCustomerVouchers,
   getCustomerOnAccountBalance,

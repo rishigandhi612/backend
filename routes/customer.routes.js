@@ -6,12 +6,14 @@ const router = express.Router();
 //controllers
 
 const {
-    getAllcustomers,
-    getcustomerbyId,
-    createcustomer,
-    updatecustomer,
-    deletecustomer,
+  getAllcustomers,
+  getcustomerbyId,
+  createcustomer,
+  updatecustomer,
+  deletecustomer,
 } = require("../controllers/customer.controller");
+const { recordCreditNote } = require("../controllers/accounting.controller");
+// /Users/rishi/Desktop/HUB/backend/controllers/accounting.controller.js
 // Get All customers
 router.get("/", getAllcustomers);
 
@@ -28,5 +30,7 @@ router.put("/:id", updatecustomer);
 // Delete a customer
 
 router.delete("/:id", deletecustomer);
+
+router.post("/creditNote", recordCreditNote);
 
 module.exports = router;

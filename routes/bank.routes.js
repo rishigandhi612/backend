@@ -7,9 +7,17 @@ const {
   createBank,
   updateBank,
   deleteBank,
+  getTransactionsByBank,
+  getBankTotals,
+  getBankSummary,
 } = require("../controllers/bank.controller");
 // Get All Banks
 router.get("/", getAllBanks);
+
+// Bank specific endpoints
+router.get("/:id/transactions", getTransactionsByBank);
+router.get("/:id/totals", getBankTotals);
+router.get("/:id/summary", getBankSummary);
 
 //Get Bank By Id
 router.get("/:id", getBankById);

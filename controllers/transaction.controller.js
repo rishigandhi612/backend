@@ -12,9 +12,9 @@ const {
 /**
  * Generate unique transaction ID
  */
-const generateTransactionId = async () => {
+const generateTransactionId = async (db = prisma) => {
   const year = new Date().getFullYear();
-  const lastTransaction = await prisma.transaction.findFirst({
+  const lastTransaction = await db.transaction.findFirst({
     where: {
       transactionId: {
         startsWith: `TXN-${year}-`,
@@ -125,88 +125,125 @@ const validateAllocations = async (allocations, totalAmount, customerId) => {
   return { valid: errors.length === 0, errors };
 };
 
+const normalizeAllocations = (allocations = [], amountKey = "amount") =>
+  allocations.map((alloc) => ({
+    invoiceNumber: alloc.invoiceNumber,
+    amount: parseFloat(alloc[amountKey]),
+  }));
+
+const applyAllocationsToInvoices = async (allocations = []) => {
+  const applied = [];
+
+  try {
+    for (const alloc of allocations) {
+      await updateInvoicePaymentStatus(alloc.invoiceNumber, alloc.amount);
+      applied.push(alloc);
+    }
+  } catch (error) {
+    for (const alloc of applied.reverse()) {
+      await reverseInvoicePayment(alloc.invoiceNumber, alloc.amount);
+    }
+    throw error;
+  }
+};
+
+const reverseAllocationsFromInvoices = async (allocations = []) => {
+  const reversed = [];
+
+  try {
+    for (const alloc of allocations) {
+      await reverseInvoicePayment(alloc.invoiceNumber, alloc.amount);
+      reversed.push(alloc);
+    }
+  } catch (error) {
+    for (const alloc of reversed.reverse()) {
+      await updateInvoicePaymentStatus(alloc.invoiceNumber, alloc.amount);
+    }
+    throw error;
+  }
+};
+
+const rollbackCreatedTransaction = async (transactionId) => {
+  await prisma.$transaction(async (tx) => {
+    await tx.transactionAllocation.deleteMany({
+      where: { transactionId },
+    });
+    await tx.customerLedger.deleteMany({
+      where: { transactionId },
+    });
+    await tx.transactionLog.deleteMany({
+      where: { transactionId },
+    });
+    await tx.transaction.delete({
+      where: { id: transactionId },
+    });
+  });
+};
+
 /**
  * Create a new transaction with proper allocation and status logic
  * POST /api/transactions
  */
 exports.createTransaction = async (req, res) => {
   try {
-    const result = await prisma.$transaction(async (tx) => {
-      const {
+    const {
+      customerId,
+      bankId,
+      transactionType,
+      voucherType,
+      totalAmount,
+      transactionDate,
+      allocations = [],
+      paymentMethod,
+      reference,
+      remarks,
+      createdBy,
+    } = req.body;
+
+    if (!customerId || !bankId || !transactionType || !totalAmount) {
+      throw new Error("Missing required fields");
+    }
+
+    const parsedTotalAmount = parseFloat(totalAmount);
+    if (Number.isNaN(parsedTotalAmount) || parsedTotalAmount <= 0) {
+      throw new Error("Total amount must be greater than zero");
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(bankId)) {
+      throw new Error("Invalid bankId");
+    }
+
+    const bank = await Bank.findById(bankId);
+    if (!bank) throw new Error("Bank not found");
+
+    const normalizedAllocations = normalizeAllocations(allocations);
+
+    if (transactionType === "AGAINST_REF" && normalizedAllocations.length === 0) {
+      throw new Error("Allocations required for AGAINST_REF transaction type");
+    }
+
+    if (
+      ["AGAINST_REF", "ON_ACCOUNT"].includes(transactionType) &&
+      normalizedAllocations.length > 0
+    ) {
+      const validation = await validateAllocations(
+        normalizedAllocations,
+        parsedTotalAmount,
         customerId,
-        bankId,
-        transactionType,
-        voucherType,
-        totalAmount,
-        transactionDate,
-        allocations = [],
-        paymentMethod,
-        reference,
-        remarks,
-        createdBy,
-      } = req.body;
+      );
 
-      // Validation
-      if (!customerId || !bankId || !transactionType || !totalAmount) {
-        throw new Error("Missing required fields");
-      }
-
-      if (parseFloat(totalAmount) <= 0) {
-        throw new Error("Total amount must be greater than zero");
-      }
-
-      // Validate bank
-      if (!mongoose.Types.ObjectId.isValid(bankId)) {
-        throw new Error("Invalid bankId");
-      }
-
-      const bank = await Bank.findById(bankId);
-      if (!bank) throw new Error("Bank not found");
-
-      // For AGAINST_REF, allocations are mandatory
-      if (transactionType === "AGAINST_REF") {
-        if (!allocations || allocations.length === 0) {
-          throw new Error(
-            "Allocations required for AGAINST_REF transaction type",
-          );
-        }
-
-        const validation = await validateAllocations(
-          allocations,
-          totalAmount,
-          customerId,
+      if (!validation.valid) {
+        throw new Error(
+          `Allocation validation failed: ${validation.errors.join(", ")}`,
         );
-
-        if (!validation.valid) {
-          throw new Error(
-            `Allocation validation failed: ${validation.errors.join(", ")}`,
-          );
-        }
       }
+    }
 
-      // For ON_ACCOUNT, allocations are optional
-      if (
-        transactionType === "ON_ACCOUNT" &&
-        allocations &&
-        allocations.length > 0
-      ) {
-        const validation = await validateAllocations(
-          allocations,
-          totalAmount,
-          customerId,
-        );
+    const safeTransactionDate = toSafeDate(transactionDate);
 
-        if (!validation.valid) {
-          throw new Error(
-            `Allocation validation failed: ${validation.errors.join(", ")}`,
-          );
-        }
-      }
+    const result = await prisma.$transaction(async (tx) => {
+      const transactionId = await generateTransactionId(tx);
 
-      // Generate transaction ID
-      const transactionId = await generateTransactionId();
-
-      // Create transaction
       const transaction = await tx.transaction.create({
         data: {
           transactionId,
@@ -215,8 +252,8 @@ exports.createTransaction = async (req, res) => {
           bankName: bank.name,
           transactionType,
           voucherType,
-          totalAmount: parseFloat(totalAmount),
-          transactionDate: toSafeDate(transactionDate),
+          totalAmount: parsedTotalAmount,
+          transactionDate: safeTransactionDate,
           paymentMethod,
           paymentStatus: "completed",
           reference,
@@ -225,21 +262,15 @@ exports.createTransaction = async (req, res) => {
         },
       });
 
-      // Process allocations and update invoices
-      if (allocations && allocations.length > 0) {
-        for (const alloc of allocations) {
-          // Create allocation record in Prisma
-          await tx.transactionAllocation.create({
-            data: {
-              transactionId: transaction.id,
-              invoiceNumber: alloc.invoiceNumber,
-              allocatedAmount: parseFloat(alloc.amount),
-            },
-          });
-
-          // Update invoice payment status in MongoDB
-          await updateInvoicePaymentStatus(alloc.invoiceNumber, alloc.amount);
-        }
+      // Store allocations in Prisma; invoice sync happens after commit.
+      if (normalizedAllocations.length > 0) {
+        await tx.transactionAllocation.createMany({
+          data: normalizedAllocations.map((alloc) => ({
+            transactionId: transaction.id,
+            invoiceNumber: alloc.invoiceNumber,
+            allocatedAmount: alloc.amount,
+          })),
+        });
       }
 
       // Update Customer Ledger
@@ -257,11 +288,11 @@ exports.createTransaction = async (req, res) => {
 
       // Determine debit/credit based on voucher type
       if (voucherType === "RECEIPT") {
-        credit = parseFloat(totalAmount);
-        balanceChange = -parseFloat(totalAmount); // Reduces customer debt
+        credit = parsedTotalAmount;
+        balanceChange = -parsedTotalAmount; // Reduces customer debt
       } else if (voucherType === "PAYMENT") {
-        debit = parseFloat(totalAmount);
-        balanceChange = parseFloat(totalAmount); // Increases customer debt (unusual)
+        debit = parsedTotalAmount;
+        balanceChange = parsedTotalAmount; // Increases customer debt (unusual)
       }
 
       const newBalance = parseFloat(lastBalance) + balanceChange;
@@ -292,8 +323,8 @@ exports.createTransaction = async (req, res) => {
           changes: {
             transactionType,
             voucherType,
-            totalAmount,
-            allocations: allocations.map((a) => ({
+            totalAmount: parsedTotalAmount,
+            allocations: normalizedAllocations.map((a) => ({
               invoiceNumber: a.invoiceNumber,
               amount: a.amount,
             })),
@@ -313,6 +344,15 @@ exports.createTransaction = async (req, res) => {
 
       return completeTransaction;
     });
+
+    if (normalizedAllocations.length > 0) {
+      try {
+        await applyAllocationsToInvoices(normalizedAllocations);
+      } catch (syncError) {
+        await rollbackCreatedTransaction(result.id);
+        throw syncError;
+      }
+    }
 
     res.status(201).json({
       success: true,
@@ -526,68 +566,72 @@ exports.updateTransaction = async (req, res) => {
       updatedBy,
     } = req.body;
 
-    const result = await prisma.$transaction(async (tx) => {
-      // Get existing transaction
-      const existingTransaction = await tx.transaction.findUnique({
-        where: { id },
-        include: {
-          allocations: true,
-        },
-      });
+    const existingTransaction = await prisma.transaction.findUnique({
+      where: { id },
+      include: {
+        allocations: true,
+      },
+    });
 
-      if (!existingTransaction) {
-        throw new Error("Transaction not found");
+    if (!existingTransaction) {
+      throw new Error("Transaction not found");
+    }
+
+    const normalizedAllocations = allocations
+      ? normalizeAllocations(allocations)
+      : null;
+    const previousAllocations = normalizeAllocations(
+      existingTransaction.allocations,
+      "allocatedAmount",
+    );
+
+    const parsedTotalAmount =
+      totalAmount !== undefined
+        ? parseFloat(totalAmount)
+        : parseFloat(existingTransaction.totalAmount);
+
+    if (Number.isNaN(parsedTotalAmount) || parsedTotalAmount <= 0) {
+      throw new Error("Total amount must be greater than zero");
+    }
+
+    if (normalizedAllocations) {
+      const validation = await validateAllocations(
+        normalizedAllocations,
+        parsedTotalAmount,
+        existingTransaction.customerId,
+      );
+
+      if (!validation.valid) {
+        throw new Error(
+          `Allocation validation failed: ${validation.errors.join(", ")}`,
+        );
       }
+    }
 
-      // If allocations are being updated, reverse old ones first
-      if (allocations) {
-        // Reverse old allocations in MongoDB
-        for (const oldAlloc of existingTransaction.allocations) {
-          await reverseInvoicePayment(
-            oldAlloc.invoiceNumber,
-            oldAlloc.allocatedAmount.toString(),
-          );
-        }
+    const parsedTransactionDate = transactionDate
+      ? toSafeDate(transactionDate)
+      : undefined;
 
-        // Delete old allocations from Prisma
+    const result = await prisma.$transaction(async (tx) => {
+      if (normalizedAllocations) {
         await tx.transactionAllocation.deleteMany({
           where: { transactionId: id },
         });
 
-        // Validate new allocations
-        const validation = await validateAllocations(
-          allocations,
-          totalAmount || existingTransaction.totalAmount.toString(),
-          existingTransaction.customerId,
-        );
-
-        if (!validation.valid) {
-          throw new Error(
-            `Allocation validation failed: ${validation.errors.join(", ")}`,
-          );
-        }
-
-        // Create new allocations
-        for (const alloc of allocations) {
-          await tx.transactionAllocation.create({
-            data: {
+        if (normalizedAllocations.length > 0) {
+          await tx.transactionAllocation.createMany({
+            data: normalizedAllocations.map((alloc) => ({
               transactionId: id,
               invoiceNumber: alloc.invoiceNumber,
-              allocatedAmount: parseFloat(alloc.amount),
-            },
+              allocatedAmount: alloc.amount,
+            })),
           });
-
-          // Update invoice in MongoDB
-          await updateInvoicePaymentStatus(alloc.invoiceNumber, alloc.amount);
         }
       }
 
-      // Update transaction
       const updateData = {};
-      if (totalAmount !== undefined)
-        updateData.totalAmount = parseFloat(totalAmount);
-      if (transactionDate)
-        updateData.transactionDate = toSafeDate(transactionDate);
+      if (totalAmount !== undefined) updateData.totalAmount = parsedTotalAmount;
+      if (parsedTransactionDate) updateData.transactionDate = parsedTransactionDate;
       if (paymentMethod) updateData.paymentMethod = paymentMethod;
       if (paymentStatus) updateData.paymentStatus = paymentStatus;
       if (reference !== undefined) updateData.reference = reference;
@@ -607,13 +651,21 @@ exports.updateTransaction = async (req, res) => {
         data: {
           transactionId: id,
           action: "updated",
-          changes: { updateData, allocations },
+          changes: {
+            updateData,
+            allocations: normalizedAllocations ?? undefined,
+          },
           userId: updatedBy,
         },
       });
 
       return updatedTransaction;
     });
+
+    if (normalizedAllocations) {
+      await reverseAllocationsFromInvoices(previousAllocations);
+      await applyAllocationsToInvoices(normalizedAllocations);
+    }
 
     res.status(200).json({
       success: true,
@@ -639,27 +691,23 @@ exports.deleteTransaction = async (req, res) => {
     const { id } = req.params;
     const { deletedBy } = req.body;
 
+    const transaction = await prisma.transaction.findUnique({
+      where: { id },
+      include: {
+        allocations: true,
+      },
+    });
+
+    if (!transaction) {
+      throw new Error("Transaction not found");
+    }
+
+    const normalizedAllocations = normalizeAllocations(
+      transaction.allocations,
+      "allocatedAmount",
+    );
+
     const result = await prisma.$transaction(async (tx) => {
-      const transaction = await tx.transaction.findUnique({
-        where: { id },
-        include: {
-          allocations: true,
-        },
-      });
-
-      if (!transaction) {
-        throw new Error("Transaction not found");
-      }
-
-      // Reverse all allocations in MongoDB
-      for (const alloc of transaction.allocations) {
-        await reverseInvoicePayment(
-          alloc.invoiceNumber,
-          alloc.allocatedAmount.toString(),
-        );
-      }
-
-      // Log deletion before deleting (cascade will remove allocations and ledger)
       await tx.transactionLog.create({
         data: {
           transactionId: id,
@@ -669,9 +717,9 @@ exports.deleteTransaction = async (req, res) => {
               transactionId: transaction.transactionId,
               customerId: transaction.customerId,
               totalAmount: transaction.totalAmount.toString(),
-              allocations: transaction.allocations.map((a) => ({
-                invoiceNumber: a.invoiceNumber,
-                amount: a.allocatedAmount.toString(),
+              allocations: normalizedAllocations.map((alloc) => ({
+                invoiceNumber: alloc.invoiceNumber,
+                amount: alloc.amount.toString(),
               })),
             },
           },
@@ -679,13 +727,14 @@ exports.deleteTransaction = async (req, res) => {
         },
       });
 
-      // Delete transaction (cascade will handle allocations and ledger entries)
       await tx.transaction.delete({
         where: { id },
       });
 
       return transaction;
     });
+
+    await reverseAllocationsFromInvoices(normalizedAllocations);
 
     res.status(200).json({
       success: true,

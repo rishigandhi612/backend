@@ -15,6 +15,11 @@
  */
 
 const prisma = require("../config/prisma");
+const {
+  enrichBillsWithPostedNotes,
+  getPostedNoteTotalsBeforeDate,
+  getPostedNotesForCustomer,
+} = require("./invoiceNote.service");
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -91,8 +96,13 @@ const daysDiff = (from, to = new Date()) => {
 };
 
 const getCustomerOpeningContext = async (customerId, startDate, endDate) => {
-  const [previousBills, previousReceipts, previousPayments, currentOpeningBills] =
-    await Promise.all([
+  const [
+    previousBills,
+    previousReceipts,
+    previousPayments,
+    previousNotes,
+    currentOpeningBills,
+  ] = await Promise.all([
       prisma.bill.aggregate({
         where: {
           customerId,
@@ -119,6 +129,7 @@ const getCustomerOpeningContext = async (customerId, startDate, endDate) => {
         _sum: { totalAmount: true },
         _count: { id: true },
       }),
+      getPostedNoteTotalsBeforeDate(customerId, startDate),
       prisma.bill.findMany({
         where: {
           customerId,
@@ -132,12 +143,19 @@ const getCustomerOpeningContext = async (customerId, startDate, endDate) => {
   const previousBillsTotal = toFloat(previousBills._sum.billAmount ?? 0);
   const previousReceiptsTotal = toFloat(previousReceipts._sum.totalAmount ?? 0);
   const previousPaymentsTotal = toFloat(previousPayments._sum.totalAmount ?? 0);
+  const previousDebitNotesTotal = toFloat(previousNotes.increaseTotal ?? 0);
+  const previousCreditNotesTotal = toFloat(previousNotes.decreaseTotal ?? 0);
   const previousActivityCount =
     previousBills._count.id +
     previousReceipts._count.id +
-    previousPayments._count.id;
+    previousPayments._count.id +
+    (previousNotes.count ?? 0);
   const broughtForwardBalance = toFloat(
-    previousBillsTotal + previousPaymentsTotal - previousReceiptsTotal,
+    previousBillsTotal +
+      previousPaymentsTotal +
+      previousDebitNotesTotal -
+      previousReceiptsTotal -
+      previousCreditNotesTotal,
   );
   const storedOpeningBalance = toFloat(
     currentOpeningBills.reduce((sum, bill) => sum + toFloat(bill.billAmount), 0),
@@ -186,31 +204,32 @@ const getCustomerLedger = async (customerId, opts = {}) => {
   );
 
   // Fetch bills (debit side — what customer owes)
-  const bills = await prisma.bill.findMany({
-    where: {
-      customerId,
-      ...(openingContext.hasPreviousActivity
-        ? { isOpeningBalance: false }
-        : {}),
-      invoiceDate: { gte: startDate, lte: endDate },
-    },
-    orderBy: { invoiceDate: "asc" },
-  });
-
-  // Fetch vouchers (credit side — what customer paid)
-  const vouchers = await prisma.voucher.findMany({
-    where: {
-      customerId,
-      type: { in: ["RECEIPT", "PAYMENT"] },
-      voucherDate: { gte: startDate, lte: endDate },
-    },
-    include: {
-      allocations: {
-        include: { bill: true },
+  const [bills, vouchers, notes] = await Promise.all([
+    prisma.bill.findMany({
+      where: {
+        customerId,
+        ...(openingContext.hasPreviousActivity
+          ? { isOpeningBalance: false }
+          : {}),
+        invoiceDate: { gte: startDate, lte: endDate },
       },
-    },
-    orderBy: { voucherDate: "asc" },
-  });
+      orderBy: { invoiceDate: "asc" },
+    }),
+    prisma.voucher.findMany({
+      where: {
+        customerId,
+        type: { in: ["RECEIPT", "PAYMENT"] },
+        voucherDate: { gte: startDate, lte: endDate },
+      },
+      include: {
+        allocations: {
+          include: { bill: true },
+        },
+      },
+      orderBy: { voucherDate: "asc" },
+    }),
+    getPostedNotesForCustomer(customerId, { startDate, endDate }),
+  ]);
 
   // ── Build ledger entries ───────────────────────────────────────────────────
 
@@ -294,9 +313,43 @@ const getCustomerLedger = async (customerId, opts = {}) => {
     });
   }
 
+  for (const note of notes) {
+    const amount = toFloat(note.amount);
+    const increasesBalance = note.balanceEffect === "INCREASE";
+
+    entries.push({
+      date: note.noteDate,
+      type: note.noteType,
+      referenceNumber: note.noteNumber,
+      referenceId: note.id,
+      voucherId: null,
+      description:
+        `${note.noteType === "DEBIT_NOTE" ? "Debit Note" : "Credit Note"} ${note.noteNumber}` +
+        (note.invoiceNumber ? ` against ${note.invoiceNumber}` : "") +
+        (note.reason ? ` — ${note.reason}` : ""),
+      debit: increasesBalance ? amount : 0,
+      credit: increasesBalance ? 0 : amount,
+      balance: 0,
+      details: {
+        invoiceNumber: note.invoiceNumber,
+        amount,
+        noteType: note.noteType,
+        balanceEffect: note.balanceEffect,
+        narration: note.narration,
+      },
+    });
+  }
+
   // ── Sort: date asc, then INVOICE before RECEIPT on same date ──────────────
 
-  const TYPE_ORDER = { OPENING_BALANCE: 1, INVOICE: 2, RECEIPT: 3, PAYMENT: 3 };
+  const TYPE_ORDER = {
+    OPENING_BALANCE: 1,
+    INVOICE: 2,
+    DEBIT_NOTE: 3,
+    CREDIT_NOTE: 3,
+    RECEIPT: 4,
+    PAYMENT: 4,
+  };
   entries.sort((a, b) => {
     const dateDiff = new Date(a.date) - new Date(b.date);
     if (dateDiff !== 0) return dateDiff;
@@ -377,12 +430,16 @@ const getOutstandingBillsReport = async (opts = {}) => {
   });
 
   // Filter to only outstanding (not fully paid) after hydration
-  const outstanding = bills.map(hydrateBill).filter((b) => b.status !== "PAID");
+  const outstanding = (await enrichBillsWithPostedNotes(bills, { asOfDate: endDate }))
+    .filter((b) => b.status !== "PAID");
 
   // ── Totals ─────────────────────────────────────────────────────────────────
 
-  const totalBillAmount = toFloat(
+  const totalOriginalBillAmount = toFloat(
     outstanding.reduce((s, b) => s + b.billAmount, 0),
+  );
+  const totalBillAmount = toFloat(
+    outstanding.reduce((s, b) => s + b.adjustedAmount, 0),
   );
   const totalAllocated = toFloat(
     outstanding.reduce((s, b) => s + b.allocatedAmount, 0),
@@ -405,6 +462,7 @@ const getOutstandingBillsReport = async (opts = {}) => {
   return {
     summary: {
       totalBills: outstanding.length,
+      totalOriginalBillAmount,
       totalBillAmount,
       totalAllocated,
       totalPending,
@@ -443,30 +501,37 @@ const getReceivablesSummary = async (opts = {}) => {
   if (customerId) where.customerId = customerId;
 
   // Group by customerId using Prisma groupBy
-  const grouped = await prisma.bill.groupBy({
-    by: ["customerId"],
-    where,
-    _sum: { billAmount: true, allocatedAmount: true },
-    _count: { id: true },
+  const bills = await prisma.bill.findMany({ where });
+  const enrichedBills = await enrichBillsWithPostedNotes(bills, {
+    asOfDate: endDate,
   });
+  const customerMap = new Map();
 
-  const rows = grouped.map((g) => {
-    const totalBilled = toFloat(g._sum.billAmount);
-    const totalCollected = toFloat(g._sum.allocatedAmount);
-    const totalPending = toFloat(totalBilled - totalCollected);
+  for (const bill of enrichedBills) {
+    if (!customerMap.has(bill.customerId)) {
+      customerMap.set(bill.customerId, {
+        customerId: bill.customerId,
+        totalBills: 0,
+        totalBilled: 0,
+        totalCollected: 0,
+        totalPending: 0,
+      });
+    }
 
-    return {
-      customerId: g.customerId,
-      totalBills: g._count.id,
-      totalBilled,
-      totalCollected,
-      totalPending,
-      collectionRate:
-        totalBilled > 0
-          ? Math.round((totalCollected / totalBilled) * 100 * 100) / 100
-          : 0,
-    };
-  });
+    const row = customerMap.get(bill.customerId);
+    row.totalBills += 1;
+    row.totalBilled = toFloat(row.totalBilled + bill.adjustedAmount);
+    row.totalCollected = toFloat(row.totalCollected + bill.allocatedAmount);
+    row.totalPending = toFloat(row.totalPending + bill.pendingAmount);
+  }
+
+  const rows = Array.from(customerMap.values()).map((row) => ({
+    ...row,
+    collectionRate:
+      row.totalBilled > 0
+        ? Math.round((row.totalCollected / row.totalBilled) * 100 * 100) / 100
+        : 0,
+  }));
 
   // Sort by totalPending descending (highest outstanding first)
   rows.sort((a, b) => b.totalPending - a.totalPending);
@@ -505,9 +570,12 @@ const getAgeingAnalysis = async (opts = {}) => {
   if (customerId) where.customerId = customerId;
 
   const bills = await prisma.bill.findMany({ where });
+  const enrichedBills = await enrichBillsWithPostedNotes(bills, {
+    asOfDate,
+  });
 
   // Only outstanding bills
-  const outstanding = bills.map(hydrateBill).filter((b) => b.pendingAmount > 0);
+  const outstanding = enrichedBills.filter((b) => b.pendingAmount > 0);
 
   const buckets = {
     "0-30": { bills: [], totalPending: 0 },
@@ -523,12 +591,14 @@ const getAgeingAnalysis = async (opts = {}) => {
       invoiceNumber: bill.invoiceNumber,
       customerId: bill.customerId,
       invoiceDate: bill.invoiceDate,
-      billAmount: bill.billAmount,
+      billAmount: bill.adjustedAmount,
       allocatedAmount: bill.allocatedAmount,
       pendingAmount: bill.pendingAmount,
       status: bill.status,
       ageDays: age,
       isOpeningBalance: bill.isOpeningBalance,
+      debitNoteAmount: bill.debitNoteAmount,
+      creditNoteAmount: bill.creditNoteAmount,
     };
 
     if (age <= 30) buckets["0-30"].bills.push(entry);

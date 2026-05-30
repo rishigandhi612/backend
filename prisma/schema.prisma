@@ -59,6 +59,7 @@ model Bill {
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
   allocations      BillAllocation[]
+  invoiceNotes     InvoiceNote[]
   openingBalance   OpeningBalance?  @relation(fields: [openingBalanceId], references: [id])
 
   @@index([customerId])
@@ -156,6 +157,37 @@ model BillAllocation {
   @@map("bill_allocations")
 }
 
+model InvoiceNote {
+  id            String        @id @default(uuid())
+  noteNumber    String        @unique
+  noteType      NoteType
+  documentType  DocumentType
+  balanceEffect BalanceEffect
+  status        NoteStatus    @default(POSTED)
+  billId        String?
+  invoiceNumber String
+  customerId    String?
+  supplierId    String?
+  amount        Decimal       @db.Decimal(12, 2)
+  noteDate      DateTime
+  financialYear String
+  reason        String?
+  narration     String?
+  createdBy     String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  bill          Bill?         @relation(fields: [billId], references: [id], onDelete: Restrict)
+
+  @@index([billId])
+  @@index([invoiceNumber])
+  @@index([customerId, noteDate])
+  @@index([supplierId, noteDate])
+  @@index([financialYear])
+  @@index([status])
+  @@index([documentType, status])
+  @@map("invoice_notes")
+}
+
 model VoucherCounter {
   id            String @id @default(uuid())
   type          String
@@ -177,6 +209,27 @@ enum VoucherType {
   PAYMENT
   CONTRA
   JOURNAL
+}
+
+enum NoteType {
+  DEBIT_NOTE
+  CREDIT_NOTE
+}
+
+enum DocumentType {
+  SALE
+  PURCHASE
+}
+
+enum BalanceEffect {
+  INCREASE
+  DECREASE
+}
+
+enum NoteStatus {
+  DRAFT
+  POSTED
+  CANCELLED
 }
 
 enum PaymentMethod {
