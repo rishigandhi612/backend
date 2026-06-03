@@ -175,6 +175,7 @@ const createCustomerProducts = async (req, res, next) => {
     customer,
     products,
     otherCharges,
+    discountAllowed,
     cgst,
     sgst,
     igst,
@@ -305,6 +306,7 @@ const createCustomerProducts = async (req, res, next) => {
       customer: customer._id,
       products: invoiceProducts,
       otherCharges: parseFloat(otherCharges) || 0,
+      discountAllowed: parseFloat(discountAllowed) || null,
       cgst: parseFloat(cgst) || 0,
       sgst: parseFloat(sgst) || 0,
       igst: parseFloat(igst) || 0,
@@ -469,13 +471,18 @@ const updateCustomerProducts = async (req, res, next) => {
     }
 
     const otherCharges = parseFloat(updatedData.otherCharges) || 0;
+    const discountAllowed = parseFloat(updatedData.discountAllowed) || null;
     const cgstAmount = parseFloat(updatedData.cgst) || 0;
     const sgstAmount = parseFloat(updatedData.sgst) || 0;
     const igstAmount = parseFloat(updatedData.igst) || 0;
 
     const totalWithOtherCharges = totalAmount + otherCharges;
     const grandTotal = Math.round(
-      totalWithOtherCharges + cgstAmount + sgstAmount + igstAmount,
+      totalWithOtherCharges +
+        cgstAmount +
+        sgstAmount +
+        igstAmount -
+        (discountAllowed || 0),
     );
 
     // ✅ Calculate payment status based on existing payments
@@ -499,6 +506,7 @@ const updateCustomerProducts = async (req, res, next) => {
       cgst: cgstAmount,
       sgst: sgstAmount,
       igst: igstAmount,
+      discountAllowed: discountAllowed,
       // ✅ Update payment fields when grandTotal changes
       pendingAmount: newPendingAmount,
       paymentStatus: paymentStatus,
@@ -943,6 +951,8 @@ const getMonthlyInvoiceTotals = async (req, res) => {
         totalSGST: { $sum: "$sgst" },
         totalIGST: { $sum: "$igst" },
         totalOtherCharges: { $sum: "$otherCharges" },
+        totalDiscount: { $sum: "$discountAllowed" },
+        totalTax: { $sum: { $add: ["$cgst", "$sgst", "$igst"] } },
         invoiceCount: { $sum: 1 },
         averageInvoiceValue: { $avg: "$grandTotal" },
         maxInvoiceValue: { $max: "$grandTotal" },
@@ -975,6 +985,7 @@ const getMonthlyInvoiceTotals = async (req, res) => {
         totalSGST: { $round: ["$totalSGST", 2] },
         totalIGST: { $round: ["$totalIGST", 2] },
         totalOtherCharges: { $round: ["$totalOtherCharges", 2] },
+        totalDiscount: { $round: ["$totalDiscount", 2] },
         totalTax: {
           $round: [{ $add: ["$totalCGST", "$totalSGST", "$totalIGST"] }, 2],
         },
@@ -1035,6 +1046,7 @@ const getMonthlyInvoiceTotals = async (req, res) => {
         totalSGST: { $sum: "$sgst" },
         totalIGST: { $sum: "$igst" },
         totalOtherCharges: { $sum: "$otherCharges" },
+        totalDiscount: { $sum: "$discountAllowed" },
         totalInvoices: { $sum: 1 },
         averageInvoiceValue: { $avg: "$grandTotal" },
         minInvoiceValue: { $min: "$grandTotal" },
@@ -1144,6 +1156,8 @@ const getMonthlyInvoiceTotals = async (req, res) => {
                   ) / 100,
                 totalOtherCharges:
                   Math.round(overallStats[0].totalOtherCharges * 100) / 100,
+                totalDiscount:
+                  Math.round(overallStats[0].totalDiscount * 100) / 100,
                 totalInvoices: overallStats[0].totalInvoices,
                 uniqueCustomerCount: overallStats[0].uniqueCustomers.length,
                 averageInvoiceValue:

@@ -50,6 +50,10 @@ const InvoiceSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    discountAllowed: {
+      type: Number,
+      default: null,
+    },
     cgst: {
       type: Number,
       default: 0,
@@ -131,7 +135,7 @@ const InvoiceSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 module.exports = mongoose.model("invoice", InvoiceSchema);
