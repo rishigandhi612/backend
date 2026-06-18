@@ -50,6 +50,10 @@ const InvoiceSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    ewbNo: {
+      type: String,
+      default: null,
+    },
     discountAllowed: {
       type: Number,
       default: null,

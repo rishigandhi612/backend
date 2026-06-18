@@ -669,32 +669,44 @@ const getBills = async (req, res) => {
         .json({ success: false, message: "Customer not found" });
     }
 
-    const statusFilter = status
-      ? status.split(",").map((s) => s.trim().toUpperCase())
-      : undefined;
+    const statusFilter =
+      status && status.trim()
+        ? status.split(",").map((s) => s.trim().toUpperCase())
+        : undefined;
 
-    const [bills, onAccountBalance] = await Promise.all([
+    const [allBills, onAccountBalance] = await Promise.all([
       getCustomerBills(customerId, { financialYear }),
       getCustomerOnAccountBalance(customerId),
     ]);
 
-    const filteredBills =
-      statusFilter && statusFilter.length > 0
-        ? bills.filter((b) => statusFilter.includes(b.status))
-        : bills;
+    // ─── BUG 5 FIX ────────────────────────────────────────────────────────────
+    // Opening balance bills are ledger anchors, not transactional bills.
+    // Separate them out BEFORE applying the status filter so they are never
+    // accidentally excluded by a status=PAID / status=UNPAID query.
+    const openingBalanceBills = allBills.filter((b) => b.isOpeningBalance);
+    const transactionalBills = allBills.filter((b) => !b.isOpeningBalance);
 
-    const totalPending = filteredBills.reduce(
-      (s, b) => s + (b.pendingAmount ?? 0),
-      0,
-    );
-    const totalAdjustedAmount = filteredBills.reduce(
+    const filteredTransactional =
+      statusFilter && statusFilter.length > 0
+        ? transactionalBills.filter((b) => statusFilter.includes(b.status))
+        : transactionalBills;
+
+    // Recombine: opening balance rows are always present in the result set.
+    const filteredBills = [...openingBalanceBills, ...filteredTransactional];
+
+    // ─── BUG 3 FIX ────────────────────────────────────────────────────────────
+    // totalAdjustedAmount must NOT include opening balance bills, otherwise
+    // those amounts are counted twice (once here, once in openingBalanceAmount).
+    const totalAdjustedAmount = filteredTransactional.reduce(
       (s, b) => s + (b.adjustedAmount ?? b.billAmount),
       0,
     );
-    const openingBalanceAmount = filteredBills.reduce(
-      (s, b) => s + (b.isOpeningBalance ? b.billAmount : 0),
+
+    const openingBalanceAmount = openingBalanceBills.reduce(
+      (s, b) => s + (b.billAmount ?? 0),
       0,
     );
+
     const totalDebitNoteAmount = filteredBills.reduce(
       (s, b) => s + (b.debitNoteAmount ?? 0),
       0,
@@ -703,6 +715,17 @@ const getBills = async (req, res) => {
       (s, b) => s + (b.creditNoteAmount ?? 0),
       0,
     );
+
+    // ─── BUG 4 FIX ────────────────────────────────────────────────────────────
+    // On-account balance is advance money already paid by the customer.
+    // Net pending = sum of bill pending amounts MINUS the on-account credit.
+    // Clamped to 0 so it never goes negative in the summary (surplus is shown
+    // separately via the onAccount field).
+    const grossPending = filteredBills.reduce(
+      (s, b) => s + (b.pendingAmount ?? 0),
+      0,
+    );
+    const totalPending = Math.max(0, grossPending - onAccountBalance);
 
     const shaped = filteredBills.map((b) => ({
       id: b.id,
@@ -718,6 +741,11 @@ const getBills = async (req, res) => {
       isOpeningBalance: b.isOpeningBalance,
       status: b.status,
     }));
+
+    // ─── BUG 6 FIX ────────────────────────────────────────────────────────────
+    // On-account balance is a credit, so pendingAmount should be negative
+    // (or zero if there is no balance). This allows frontend running-balance
+    // calculations to correctly offset it against outstanding invoices.
     const onAccountEntry = {
       id: null,
       invoiceDate: null,
@@ -726,29 +754,49 @@ const getBills = async (req, res) => {
       debitNoteAmount: 0,
       creditNoteAmount: 0,
       adjustedAmount: 0,
-      allocatedAmount: 0,
-      pendingAmount: 0,
+      allocatedAmount: onAccountBalance,
+      pendingAmount: onAccountBalance > 0 ? -onAccountBalance : 0,
       openingAmount: onAccountBalance,
       isOpeningBalance: false,
       status: "ON_ACCOUNT",
     };
+
+    // ─── BUG 2 FIX ────────────────────────────────────────────────────────────
+    // data has N+1 rows (bills + ON-ACCOUNT entry).
+    // summary.total must reflect the full data array length, not just filteredBills,
+    // so the frontend can rely on it for table rendering / pagination.
     const data = [...shaped, onAccountEntry];
+
+    // ─── BUG 1 FIX ────────────────────────────────────────────────────────────
+    // byStatus counts are derived from ALL bills (unfiltered transactional set),
+    // not just filteredBills. This way the summary always shows the true
+    // distribution across statuses regardless of the active status filter,
+    // and summary.total reflects the unfiltered bill count so callers can
+    // distinguish "X of Y shown" from "X total".
     return res.json({
       success: true,
       data,
       summary: {
-        total: filteredBills.length,
+        // Total unfiltered bill count (excludes the synthetic ON-ACCOUNT row)
+        total: allBills.length,
+        // Count actually returned in data (excludes ON-ACCOUNT row)
+        filtered: filteredBills.length,
         totalAdjustedAmount: Math.round(totalAdjustedAmount * 100) / 100,
         totalPending: Math.round(totalPending * 100) / 100,
+        grossPending: Math.round(grossPending * 100) / 100,
         totalDebitNoteAmount: Math.round(totalDebitNoteAmount * 100) / 100,
         totalCreditNoteAmount: Math.round(totalCreditNoteAmount * 100) / 100,
         onAccount: Math.round(onAccountBalance * 100) / 100,
         openingBalanceAmount: Math.round(openingBalanceAmount * 100) / 100,
+        // Always reflects the full unfiltered distribution
         byStatus: {
-          UNPAID: filteredBills.filter((b) => b.status === "UNPAID").length,
-          PARTIAL: filteredBills.filter((b) => b.status === "PARTIAL").length,
-          PAID: filteredBills.filter((b) => b.status === "PAID").length,
-          OVERPAID: filteredBills.filter((b) => b.status === "OVERPAID").length,
+          UNPAID: transactionalBills.filter((b) => b.status === "UNPAID")
+            .length,
+          PARTIAL: transactionalBills.filter((b) => b.status === "PARTIAL")
+            .length,
+          PAID: transactionalBills.filter((b) => b.status === "PAID").length,
+          OVERPAID: transactionalBills.filter((b) => b.status === "OVERPAID")
+            .length,
         },
       },
       customer: {
@@ -817,6 +865,17 @@ const editReceipt = async (req, res) => {
   try {
     const { voucherId } = req.params;
     const updates = req.body;
+
+    if (updates.customerId) {
+      const customer = await Customer.findById(updates.customerId);
+      if (!customer) {
+        return res.status(404).json({
+          success: false,
+          message: `Customer ${updates.customerId} not found`,
+        });
+      }
+    }
+
     const voucher = await updateReceipt(voucherId, {
       ...updates,
       // pass user information if needed (though not used currently)
@@ -890,9 +949,13 @@ const getVouchers = async (req, res) => {
 const VALIDATION_KEYWORDS = [
   "required",
   "must be",
+  "valid date",
   "not found",
   "do not belong",
   "cannot exceed",
+  "cannot be less",
+  "exceeds overpaid",
+  "negative allocations",
   "already applied",
   "only has",
   "supported yet",

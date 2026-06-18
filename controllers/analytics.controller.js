@@ -152,7 +152,7 @@ const getQuantitySoldByWidth = async (req, res) => {
         acc.uniqueWidths.add(curr.width);
         return acc;
       },
-      { totalQuantity: 0, totalRevenue: 0, uniqueWidths: new Set() }
+      { totalQuantity: 0, totalRevenue: 0, uniqueWidths: new Set() },
     );
 
     res.json({
@@ -237,19 +237,23 @@ const getWidthDistribution = async (req, res) => {
     // Calculate percentages
     const totalRevenue = results.reduce(
       (sum, item) => sum + item.totalRevenue,
-      0
+      0,
     );
     const totalQuantity = results.reduce(
       (sum, item) => sum + item.totalQuantity,
-      0
+      0,
     );
 
     const enrichedResults = results.map((item) => ({
       ...item,
       revenuePercentage:
-        Math.round((item.totalRevenue / totalRevenue) * 100 * 100) / 100,
+        totalRevenue && totalRevenue > 0
+          ? Math.round((item.totalRevenue / totalRevenue) * 100 * 100) / 100
+          : 0,
       quantityPercentage:
-        Math.round((item.totalQuantity / totalQuantity) * 100 * 100) / 100,
+        totalQuantity && totalQuantity > 0
+          ? Math.round((item.totalQuantity / totalQuantity) * 100 * 100) / 100
+          : 0,
     }));
 
     res.json({
@@ -352,7 +356,7 @@ const getSalesTrends = async (req, res) => {
       const growthRate =
         prevRevenue > 0
           ? Math.round(
-              ((period.totalRevenue - prevRevenue) / prevRevenue) * 100 * 100
+              ((period.totalRevenue - prevRevenue) / prevRevenue) * 100 * 100,
             ) / 100
           : null;
 
@@ -363,8 +367,10 @@ const getSalesTrends = async (req, res) => {
     const movingAverageWindow = 3;
     const recentPeriods = trendsWithGrowth.slice(-movingAverageWindow);
     const averageRevenue =
-      recentPeriods.reduce((sum, p) => sum + p.totalRevenue, 0) /
-      movingAverageWindow;
+      recentPeriods.length > 0
+        ? recentPeriods.reduce((sum, p) => sum + p.totalRevenue, 0) /
+          recentPeriods.length
+        : 0;
 
     res.json({
       success: true,
@@ -542,7 +548,7 @@ const getAnalyticsDashboard = async (req, res) => {
                   (overallMetrics[0].totalCGST +
                     overallMetrics[0].totalSGST +
                     overallMetrics[0].totalIGST) *
-                    100
+                    100,
                 ) / 100,
             }
           : null,
@@ -793,6 +799,7 @@ const getProductSalesAnalytics = async (req, res) => {
         acc.totalRevenue += curr.totalRevenue;
         acc.totalProfit += curr.grossProfit || 0;
         acc.totalInvoices += curr.invoiceCount;
+        acc.totalLineItems += curr.totalQuantitySold || 0;
         acc.uniqueInvoices.add(curr._id.toString());
         return acc;
       },
@@ -801,8 +808,9 @@ const getProductSalesAnalytics = async (req, res) => {
         totalRevenue: 0,
         totalProfit: 0,
         totalInvoices: 0,
+        totalLineItems: 0,
         uniqueInvoices: new Set(),
-      }
+      },
     );
 
     res.json({
@@ -819,7 +827,7 @@ const getProductSalesAnalytics = async (req, res) => {
           overallSummary.totalInvoices > 0
             ? Math.round(
                 (overallSummary.totalRevenue / overallSummary.totalInvoices) *
-                  100
+                  100,
               ) / 100
             : 0,
         productsAnalyzed: results.length,
@@ -995,13 +1003,14 @@ const getAverageSaleCost = async (req, res) => {
         acc.weightedPriceSum += curr.averageSalePrice * curr.totalQuantitySold;
         return acc;
       },
-      { totalRevenue: 0, totalQuantity: 0, weightedPriceSum: 0 }
+      { totalRevenue: 0, totalQuantity: 0, weightedPriceSum: 0 },
     );
 
     const overallAveragePrice =
       marketSummary.totalQuantity > 0
         ? Math.round(
-            (marketSummary.weightedPriceSum / marketSummary.totalQuantity) * 100
+            (marketSummary.weightedPriceSum / marketSummary.totalQuantity) *
+              100,
           ) / 100
         : 0;
 
@@ -1138,9 +1147,8 @@ const getMonthlySalesDashboard = async (req, res) => {
       },
     ];
 
-    const currentYearData = await CustomerProduct.aggregate(
-      currentYearPipeline
-    );
+    const currentYearData =
+      await CustomerProduct.aggregate(currentYearPipeline);
 
     // Last year comparison if requested
     let lastYearData = null;
@@ -1197,7 +1205,7 @@ const getMonthlySalesDashboard = async (req, res) => {
       // Calculate comparison
       comparison = currentYearData.map((current) => {
         const lastYear = lastYearData.find(
-          (ly) => ly._id === current.month
+          (ly) => ly._id === current.month,
         ) || {
           totalQuantity: 0,
           totalRevenue: 0,
@@ -1228,19 +1236,19 @@ const getMonthlySalesDashboard = async (req, res) => {
             quantityGrowthPercent:
               lastYear.totalQuantity > 0
                 ? Math.round(
-                    (quantityChange / lastYear.totalQuantity) * 100 * 100
+                    (quantityChange / lastYear.totalQuantity) * 100 * 100,
                   ) / 100
                 : null,
             revenueGrowthPercent:
               lastYear.totalRevenue > 0
                 ? Math.round(
-                    (revenueChange / lastYear.totalRevenue) * 100 * 100
+                    (revenueChange / lastYear.totalRevenue) * 100 * 100,
                   ) / 100
                 : null,
             invoiceGrowthPercent:
               lastYear.totalInvoices > 0
                 ? Math.round(
-                    (invoiceChange / lastYear.totalInvoices) * 100 * 100
+                    (invoiceChange / lastYear.totalInvoices) * 100 * 100,
                   ) / 100
                 : null,
           },
@@ -1256,17 +1264,23 @@ const getMonthlySalesDashboard = async (req, res) => {
         acc.totalInvoices += month.totalInvoices;
         return acc;
       },
-      { totalQuantity: 0, totalRevenue: 0, totalInvoices: 0 }
+      { totalQuantity: 0, totalRevenue: 0, totalInvoices: 0 },
     );
 
-    // Calculate best and worst performing months
-    const bestMonth = currentYearData.reduce((best, current) =>
-      current.totalRevenue > best.totalRevenue ? current : best
-    );
+    // Calculate best and worst performing months (safe for empty data)
+    const bestMonth =
+      currentYearData && currentYearData.length > 0
+        ? currentYearData.reduce((best, current) =>
+            current.totalRevenue > best.totalRevenue ? current : best,
+          )
+        : { monthName: "N/A", totalRevenue: 0 };
 
-    const worstMonth = currentYearData.reduce((worst, current) =>
-      current.totalRevenue < worst.totalRevenue ? current : worst
-    );
+    const worstMonth =
+      currentYearData && currentYearData.length > 0
+        ? currentYearData.reduce((worst, current) =>
+            current.totalRevenue < worst.totalRevenue ? current : worst,
+          )
+        : { monthName: "N/A", totalRevenue: 0 };
 
     res.json({
       success: true,
@@ -1282,7 +1296,7 @@ const getMonthlySalesDashboard = async (req, res) => {
         averageInvoiceValue:
           yearSummary.totalInvoices > 0
             ? Math.round(
-                (yearSummary.totalRevenue / yearSummary.totalInvoices) * 100
+                (yearSummary.totalRevenue / yearSummary.totalInvoices) * 100,
               ) / 100
             : 0,
       },
@@ -1296,12 +1310,14 @@ const getMonthlySalesDashboard = async (req, res) => {
           revenue: worstMonth.totalRevenue,
         },
         revenueVolatility:
-          Math.round(
-            ((bestMonth.totalRevenue - worstMonth.totalRevenue) /
-              worstMonth.totalRevenue) *
-              100 *
-              100
-          ) / 100,
+          worstMonth.totalRevenue && worstMonth.totalRevenue !== 0
+            ? Math.round(
+                ((bestMonth.totalRevenue - worstMonth.totalRevenue) /
+                  worstMonth.totalRevenue) *
+                  100 *
+                  100,
+              ) / 100
+            : null,
       },
       comparison: compareWithLastYear === "true" ? comparison : null,
     });
@@ -1366,6 +1382,9 @@ const getTopPerformingProducts = async (req, res) => {
       sortStage.totalQuantitySold = -1;
     } else if (metric === "revenue") {
       sortStage.totalRevenue = -1;
+    } else {
+      // default to revenue
+      sortStage.totalRevenue = -1;
     }
     pipeline.push({ $sort: sortStage });
 
@@ -1422,7 +1441,12 @@ const getCustomerPurchasePatterns = async (req, res) => {
               $reduce: {
                 input: "$products",
                 initialValue: 0,
-                in: { $add: ["$value", "$this.quantity"] },
+                in: {
+                  $add: [
+                    "$$value",
+                    { $toDouble: { $ifNull: ["$$this.quantity", 0] } },
+                  ],
+                },
               },
             },
           },
@@ -1489,7 +1513,7 @@ const getCustomerPurchasePatterns = async (req, res) => {
         customersAnalyzed: results.length,
         totalValueAnalyzed: results.reduce(
           (sum, c) => sum + c.totalPurchaseValue,
-          0
+          0,
         ),
       },
       filters: { startDate, endDate, customerId, minPurchaseValue, limit },
@@ -1685,7 +1709,7 @@ const diagnoseWidthRevenueIssues = async (req, res) => {
     ];
 
     const widthBreakdown = await CustomerProduct.aggregate(
-      widthBreakdownPipeline
+      widthBreakdownPipeline,
     );
 
     // Get sample invoices with issues for manual review
@@ -1845,7 +1869,7 @@ const suggestDataFixes = async (req, res) => {
 
           await CustomerProduct.updateOne(
             { _id: fix.invoiceId },
-            { $set: updateFields }
+            { $set: updateFields },
           );
           fixedCount++;
         }
@@ -2083,7 +2107,7 @@ const getMultiWidthMonthlyAnalytics = async (req, res) => {
         totalQuantity: 0,
         totalRevenue: 0,
         totalInvoices: 0,
-      }
+      },
     );
 
     // Get width-wise summary across all months
@@ -2123,13 +2147,13 @@ const getMultiWidthMonthlyAnalytics = async (req, res) => {
         averageQuantityPerMonth:
           processedResults.length > 0
             ? Math.round(
-                (summary.totalQuantity / processedResults.length) * 100
+                (summary.totalQuantity / processedResults.length) * 100,
               ) / 100
             : 0,
         averageRevenuePerMonth:
           processedResults.length > 0
             ? Math.round(
-                (summary.totalRevenue / processedResults.length) * 100
+                (summary.totalRevenue / processedResults.length) * 100,
               ) / 100
             : 0,
         monthsWithData: processedResults.length,

@@ -25,6 +25,57 @@ const getFinancialYear = (date = new Date()) => {
 
 const toFloat = (val) => parseFloat(parseFloat(val).toFixed(2));
 
+const parsePositiveAmount = (value, fieldName) => {
+  if (value == null || isNaN(value) || parseFloat(value) <= 0) {
+    throw new Error(`${fieldName} must be a positive number`);
+  }
+  return toFloat(value);
+};
+
+const parseAllocationAmount = (value) => {
+  if (value == null || isNaN(value) || parseFloat(value) === 0) {
+    throw new Error("allocatedAmount must be a non-zero number");
+  }
+  return toFloat(value);
+};
+
+const parseOptionalDate = (value, fieldName) => {
+  if (value == null || value === "") return null;
+  const date = new Date(value);
+  if (isNaN(date.getTime())) throw new Error(`${fieldName} must be a valid date`);
+  return date;
+};
+
+const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+const VALID_PAYMENT_METHODS = ["NEFT_RTGS", "CHEQUE", "CASH", "UPI"];
+
+const tryDecodeReceiptRef = (value) => {
+  const raw = String(value ?? "").trim();
+  if (!raw || raw.includes("/")) return raw;
+
+  const normalized = raw.replace(/-/g, "+").replace(/_/g, "/");
+  if (!/^[A-Za-z0-9+/=]+$/.test(normalized)) return raw;
+
+  const padded = normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    "=",
+  );
+
+  try {
+    const decoded = Buffer.from(padded, "base64").toString("utf8");
+    if (/^[A-Z]+\/\d+\/\d{2}-\d{2}$/.test(decoded)) return decoded;
+  } catch (error) {
+    return raw;
+  }
+
+  return raw;
+};
+
+const getVoucherWhereFromRef = (voucherRef) => {
+  const decodedRef = tryDecodeReceiptRef(voucherRef);
+  return decodedRef.includes("/") ? { voucherId: decodedRef } : { id: decodedRef };
+};
+
 const VOUCHER_DETAIL_INCLUDE = {
   entries: {
     include: {
@@ -199,7 +250,8 @@ const getVoucherWithDetails = async (where) => {
 const getReceiptById = async (voucherId) => {
   if (!voucherId) throw new Error("voucherId is required");
 
-  const voucher = await getVoucherWithDetails({ voucherId });
+  const where = getVoucherWhereFromRef(voucherId);
+  const voucher = await getVoucherWithDetails(where);
 
   if (voucher.type !== "RECEIPT") {
     throw new Error(`Receipt ${voucherId} not found`);
@@ -208,8 +260,353 @@ const getReceiptById = async (voucherId) => {
   return voucher;
 };
 
-const updateReceipt = async () => {
-  throw new Error("Receipt editing is not supported yet");
+const validateReceiptAllocations = async (
+  allocations,
+  amount,
+  customerId,
+  { existingVoucherId = null } = {},
+) => {
+  const providedSum = toFloat(
+    allocations.reduce((sum, allocation) => {
+      return sum + parseFloat(allocation.allocatedAmount ?? 0);
+    }, 0),
+  );
+
+  // if (providedSum > amount + 0.001) {
+  //   throw new Error(
+  //     `Allocation total (${providedSum}) cannot exceed totalAmount (${amount})`,
+  //   );
+  // }
+
+  const negativeOnAccount = allocations.find(
+    (allocation) =>
+      allocation.billId == null && toFloat(allocation.allocatedAmount) < 0,
+  );
+  if (negativeOnAccount) {
+    throw new Error("Negative allocations must be linked to an overpaid bill");
+  }
+
+  const billIds = allocations
+    .filter((allocation) => allocation.billId != null)
+    .map((allocation) => allocation.billId);
+
+  if (billIds.length > 0) {
+    const uniqueBillIds = [...new Set(billIds)];
+    const bills = await prisma.bill.findMany({
+      where: { id: { in: uniqueBillIds } },
+    });
+
+    if (bills.length !== uniqueBillIds.length) {
+      const found = new Set(bills.map((bill) => bill.id));
+      const missing = uniqueBillIds.filter((id) => !found.has(id));
+      throw new Error(`Bills not found: ${missing.join(", ")}`);
+    }
+
+    const wrongCustomer = bills.filter((bill) => bill.customerId !== customerId);
+    if (wrongCustomer.length > 0) {
+      throw new Error(
+        `Bills do not belong to customer ${customerId}: ` +
+          wrongCustomer.map((bill) => bill.invoiceNumber).join(", "),
+      );
+    }
+
+    const netByBillId = new Map();
+    for (const allocation of allocations) {
+      if (allocation.billId == null) continue;
+      netByBillId.set(
+        allocation.billId,
+        toFloat(
+          (netByBillId.get(allocation.billId) ?? 0) +
+            toFloat(allocation.allocatedAmount),
+        ),
+      );
+    }
+
+    const negativeBillIds = [...netByBillId.entries()]
+      .filter(([, netAmount]) => netAmount < 0)
+      .map(([billId]) => billId);
+
+    if (negativeBillIds.length > 0) {
+      const oldAllocationSumByBillId = new Map();
+      if (existingVoucherId) {
+        const oldAllocations = await prisma.billAllocation.groupBy({
+          by: ["billId"],
+          where: {
+            voucherId: existingVoucherId,
+            billId: { in: negativeBillIds },
+          },
+          _sum: { allocatedAmount: true },
+        });
+
+        for (const oldAllocation of oldAllocations) {
+          oldAllocationSumByBillId.set(
+            oldAllocation.billId,
+            toFloat(oldAllocation._sum.allocatedAmount ?? 0),
+          );
+        }
+      }
+
+      const billById = new Map(bills.map((bill) => [bill.id, bill]));
+      for (const billId of negativeBillIds) {
+        const bill = billById.get(billId);
+        const baseAllocated = toFloat(
+          toFloat(bill.allocatedAmount) -
+            (oldAllocationSumByBillId.get(billId) ?? 0),
+        );
+        const availableOverpaid = toFloat(baseAllocated - toFloat(bill.billAmount));
+        const requestedAdjustment = Math.abs(netByBillId.get(billId));
+
+        if (availableOverpaid <= 0 || requestedAdjustment > availableOverpaid + 0.001) {
+          throw new Error(
+            `Negative allocation ${requestedAdjustment} exceeds overpaid amount ` +
+              `${Math.max(availableOverpaid, 0)} for bill ${bill.invoiceNumber}`,
+          );
+        }
+      }
+    }
+  }
+
+  return { providedSum, billIds };
+};
+
+const buildAllocationsWithRemainder = async (
+  allocations,
+  amount,
+  customerId,
+  opts = {},
+) => {
+  const normalized = (allocations ?? []).map((allocation) => {
+    const allocatedAmount = parseAllocationAmount(allocation.allocatedAmount);
+
+    return {
+      billId: allocation.billId ?? null,
+      allocatedAmount,
+      narration: allocation.narration ?? null,
+    };
+  });
+
+  const { providedSum, billIds } = await validateReceiptAllocations(
+    normalized,
+    amount,
+    customerId,
+    opts,
+  );
+
+  const remainder = toFloat(amount - providedSum);
+  if (remainder > 0) {
+    normalized.push({
+      billId: null,
+      allocatedAmount: remainder,
+      narration: "On-account (unallocated)",
+    });
+  }
+
+  return { finalAllocations: normalized, billIds };
+};
+
+const preserveAllocationsForAmountChange = async (
+  existingAllocations,
+  amount,
+  customerId,
+) => {
+  const billAllocations = existingAllocations
+    .filter((allocation) => allocation.billId != null)
+    .map((allocation) => ({
+      billId: allocation.billId,
+      allocatedAmount: toFloat(allocation.allocatedAmount),
+      narration: allocation.narration ?? null,
+    }));
+
+  const billAllocatedAmount = toFloat(
+    billAllocations.reduce(
+      (sum, allocation) => sum + allocation.allocatedAmount,
+      0,
+    ),
+  );
+
+  if (billAllocatedAmount > amount + 0.001) {
+    throw new Error(
+      `totalAmount (${amount}) cannot be less than bill allocations (${billAllocatedAmount})`,
+    );
+  }
+
+  const existingOnAccount = existingAllocations.find(
+    (allocation) => allocation.billId == null,
+  );
+  const finalAllocations = [...billAllocations];
+  const remainder = toFloat(amount - billAllocatedAmount);
+
+  if (remainder > 0) {
+    finalAllocations.push({
+      billId: null,
+      allocatedAmount: remainder,
+      narration: existingOnAccount?.narration ?? "On-account (unallocated)",
+    });
+  }
+
+  const { billIds } = await validateReceiptAllocations(
+    finalAllocations,
+    amount,
+    customerId,
+  );
+
+  return { finalAllocations, billIds };
+};
+
+const updateReceipt = async (voucherRef, params = {}) => {
+  if (!voucherRef) throw new Error("voucherId is required");
+
+  const existing = await getReceiptById(voucherRef);
+  const customerId = params.customerId ?? existing.customerId;
+
+  if (
+    customerId !== existing.customerId &&
+    !hasOwn(params, "allocations") &&
+    existing.allocations.some((allocation) => allocation.billId != null)
+  ) {
+    throw new Error("allocations are required when changing customerId");
+  }
+
+  const amount = hasOwn(params, "totalAmount")
+    ? parsePositiveAmount(params.totalAmount, "totalAmount")
+    : toFloat(existing.totalAmount);
+  const paymentMethod = params.paymentMethod ?? existing.paymentMethod;
+  if (!VALID_PAYMENT_METHODS.includes(paymentMethod)) {
+    throw new Error(
+      `paymentMethod must be one of: ${VALID_PAYMENT_METHODS.join(", ")}`,
+    );
+  }
+  const voucherDate = hasOwn(params, "voucherDate")
+    ? parseOptionalDate(params.voucherDate, "voucherDate")
+    : existing.voucherDate;
+
+  if (!voucherDate) throw new Error("voucherDate must be a valid date");
+
+  const bankInput = hasOwn(params, "bankId") ? params.bankId : existing.bankId;
+  const { bankId: resolvedBankId, bankName } = await resolveBank(
+    paymentMethod,
+    bankInput,
+  );
+
+  const bankLedgerCode = paymentMethod === "CASH" ? "CASH-001" : "BANK-001";
+  const [arAccount, bankAccount] = await Promise.all([
+    getAccount("AR-001"),
+    getAccount(bankLedgerCode),
+  ]);
+
+  const oldBillIds = [
+    ...new Set(
+      existing.allocations
+        .map((allocation) => allocation.billId)
+        .filter(Boolean),
+    ),
+  ];
+
+  let allocationPayload = null;
+  if (hasOwn(params, "allocations")) {
+    allocationPayload = await buildAllocationsWithRemainder(
+      params.allocations ?? [],
+      amount,
+      customerId,
+      { existingVoucherId: existing.id },
+    );
+  } else if (
+    hasOwn(params, "totalAmount") ||
+    customerId !== existing.customerId
+  ) {
+    allocationPayload = await preserveAllocationsForAmountChange(
+      existing.allocations,
+      amount,
+      customerId,
+    );
+  }
+
+  const chequeDate = hasOwn(params, "chequeDate")
+    ? parseOptionalDate(params.chequeDate, "chequeDate")
+    : existing.chequeDate;
+
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.voucher.update({
+        where: { id: existing.id },
+        data: {
+          customerId,
+          totalAmount: amount,
+          paymentMethod,
+          bankId: resolvedBankId,
+          bankName: bankName ?? null,
+          chequeNumber: hasOwn(params, "chequeNumber")
+            ? params.chequeNumber
+            : existing.chequeNumber,
+          chequeDate,
+          utrNumber: hasOwn(params, "utrNumber")
+            ? params.utrNumber
+            : existing.utrNumber,
+          upiRef: hasOwn(params, "upiRef") ? params.upiRef : existing.upiRef,
+          reference: hasOwn(params, "reference")
+            ? params.reference
+            : existing.reference,
+          narration: hasOwn(params, "narration")
+            ? params.narration
+            : existing.narration,
+          voucherDate,
+          financialYear: getFinancialYear(voucherDate),
+        },
+      });
+
+      await tx.voucherEntry.deleteMany({
+        where: { voucherId: existing.id },
+      });
+      await tx.voucherEntry.createMany({
+        data: [
+          {
+            voucherId: existing.id,
+            ledgerAccountId: bankAccount.id,
+            entryType: "DEBIT",
+            amount,
+            narration: `Receipt ${existing.voucherId}`,
+          },
+          {
+            voucherId: existing.id,
+            ledgerAccountId: arAccount.id,
+            entryType: "CREDIT",
+            amount,
+            narration: `Receipt ${existing.voucherId}`,
+          },
+        ],
+      });
+
+      if (allocationPayload) {
+        await tx.billAllocation.deleteMany({
+          where: { voucherId: existing.id },
+        });
+        await tx.billAllocation.createMany({
+          data: allocationPayload.finalAllocations.map((allocation) => ({
+            voucherId: existing.id,
+            billId: allocation.billId,
+            customerId,
+            allocatedAmount: allocation.allocatedAmount,
+            narration: allocation.narration,
+          })),
+        });
+
+        const affectedBillIds = [
+          ...new Set([...oldBillIds, ...allocationPayload.billIds]),
+        ];
+        for (const billId of affectedBillIds) {
+          await recalculateBillAllocated(billId, tx);
+        }
+      }
+
+      await recalculateVoucherOnAccount(existing.id, tx);
+    },
+    {
+      maxWait: 10000,
+      timeout: 15000,
+    },
+  );
+
+  return getVoucherWithDetails({ id: existing.id });
 };
 
 const deleteReceipt = async (voucherRef) => {
@@ -217,7 +614,7 @@ const deleteReceipt = async (voucherRef) => {
 
   const where = voucherRef.includes("/")
     ? { voucherId: voucherRef }
-    : { id: voucherRef };
+    : getVoucherWhereFromRef(voucherRef);
   const voucher = await getVoucherWithDetails(where);
 
   if (voucher.type !== "RECEIPT") {
@@ -300,56 +697,11 @@ const createReceipt = async (params) => {
   const amount = toFloat(totalAmount);
   const financialYear = getFinancialYear(new Date(voucherDate));
 
-  // ── Validate allocation sum doesn't exceed totalAmount ─────────────────────
-
-  const providedSum = toFloat(
-    allocations.reduce((s, a) => s + parseFloat(a.allocatedAmount ?? 0), 0),
+  const { finalAllocations, billIds } = await buildAllocationsWithRemainder(
+    allocations,
+    amount,
+    customerId,
   );
-
-  if (providedSum > amount + 0.001) {
-    throw new Error(
-      `Allocation total (${providedSum}) cannot exceed totalAmount (${amount})`,
-    );
-  }
-
-  // ── Auto on-account row for remainder ─────────────────────────────────────
-
-  const finalAllocations = [...allocations];
-  const remainder = toFloat(amount - providedSum);
-  if (remainder > 0) {
-    finalAllocations.push({
-      billId: null,
-      allocatedAmount: remainder,
-      narration: "On-account (unallocated)",
-    });
-  }
-
-  // ── Validate bills ─────────────────────────────────────────────────────────
-
-  const billIds = finalAllocations
-    .filter((a) => a.billId != null)
-    .map((a) => a.billId);
-
-  if (billIds.length > 0) {
-    const bills = await prisma.bill.findMany({
-      // ← this line was replaced by mistake
-      where: { id: { in: billIds } },
-    });
-
-    if (bills.length !== billIds.length) {
-      const found = new Set(bills.map((b) => b.id));
-      const missing = billIds.filter((id) => !found.has(id));
-      throw new Error(`Bills not found: ${missing.join(", ")}`);
-    }
-
-    const wrongCustomer = bills.filter((b) => b.customerId !== customerId);
-    if (wrongCustomer.length > 0) {
-      throw new Error(
-        `Bills do not belong to customer ${customerId}: ` +
-          wrongCustomer.map((b) => b.invoiceNumber).join(", "),
-      );
-    }
-  }
 
   // ── Resolve bank from MongoDB ──────────────────────────────────────────────
 

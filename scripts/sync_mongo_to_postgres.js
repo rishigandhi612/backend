@@ -24,10 +24,7 @@ async function main() {
     process.env.MONGO_URL ||
     "mongodb://localhost:27017/hub";
 
-  await mongoose.connect(mongoUri, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  });
+  await mongoose.connect(mongoUri);
 
   try {
     const total = await CustomerProduct.countDocuments();

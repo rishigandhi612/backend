@@ -107,7 +107,7 @@ const getTransactionsByBank = async (req, res, next) => {
       paymentStatus,
       search,
       sortBy = "voucherDate",
-      sortDir = "desc",
+      sortDir = "asc",
     } = req.query;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -187,7 +187,11 @@ const getTransactionsByBank = async (req, res, next) => {
 
         const totalAmount = bill ? toNum(bill.billAmount) : null;
         const allocated = toNum(a.allocatedAmount);
-        const pendingAmount = bill && totalAmount !== null ? Math.round((totalAmount - toNum(bill.allocatedAmount)) * 100) / 100 : null;
+        const pendingAmount =
+          bill && totalAmount !== null
+            ? Math.round((totalAmount - toNum(bill.allocatedAmount)) * 100) /
+              100
+            : null;
 
         return {
           ...a,
@@ -196,7 +200,8 @@ const getTransactionsByBank = async (req, res, next) => {
           pendingAmount,
           bill: bill
             ? {
-                id: bill.id,
+                id: bill.mongoInvoiceId,
+
                 invoiceNumber: bill.invoiceNumber,
               }
             : null,

@@ -7,6 +7,8 @@ const { syncInvoiceToBill } = require("../services/billSync.service");
 
 const Transporter = require("../models/transport.models");
 
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 // Helper function to validate roll IDs
 const validateRollIds = async (rollIds) => {
   if (!rollIds || rollIds.length === 0) return { valid: true, errors: [] };
@@ -88,7 +90,8 @@ const getAllCustomerProducts = async (req, res, next) => {
 
     let filter = {};
     if (search && search.trim() !== "") {
-      const searchPattern = new RegExp(search.trim(), "i");
+      const trimmedSearch = search.trim();
+      const searchPattern = new RegExp(trimmedSearch, "i");
       const matchingCustomers = await Customer.find({
         $or: [
           { name: searchPattern },
@@ -98,13 +101,29 @@ const getAllCustomerProducts = async (req, res, next) => {
       }).select("_id");
 
       const customerIds = matchingCustomers.map((customer) => customer._id);
+      const searchConditions = [
+        { invoiceNumber: searchPattern },
+        { rollIds: { $in: [searchPattern] } },
+        { customer: { $in: customerIds } },
+      ];
+
+      const numericSearch = Number(trimmedSearch);
+      if (!Number.isNaN(numericSearch)) {
+        searchConditions.push(
+          { grandTotal: numericSearch },
+          {
+            $expr: {
+              $regexMatch: {
+                input: { $toString: "$grandTotal" },
+                regex: escapeRegExp(trimmedSearch),
+              },
+            },
+          },
+        );
+      }
 
       filter = {
-        $or: [
-          { invoiceNumber: searchPattern },
-          { rollIds: { $in: [searchPattern] } },
-          { customer: { $in: customerIds } },
-        ],
+        $or: searchConditions,
       };
     }
 
@@ -176,6 +195,7 @@ const createCustomerProducts = async (req, res, next) => {
     products,
     otherCharges,
     discountAllowed,
+    ewbNo,
     cgst,
     sgst,
     igst,
@@ -310,6 +330,7 @@ const createCustomerProducts = async (req, res, next) => {
       cgst: parseFloat(cgst) || 0,
       sgst: parseFloat(sgst) || 0,
       igst: parseFloat(igst) || 0,
+      ewbNo: ewbNo || null,
       totalAmount: calculatedTotalAmount,
       grandTotal: parseFloat(grandTotal),
       paidAmount: 0,
@@ -472,6 +493,7 @@ const updateCustomerProducts = async (req, res, next) => {
 
     const otherCharges = parseFloat(updatedData.otherCharges) || 0;
     const discountAllowed = parseFloat(updatedData.discountAllowed) || null;
+    const ewbNo = updatedData.ewbNo || null;
     const cgstAmount = parseFloat(updatedData.cgst) || 0;
     const sgstAmount = parseFloat(updatedData.sgst) || 0;
     const igstAmount = parseFloat(updatedData.igst) || 0;
@@ -507,6 +529,7 @@ const updateCustomerProducts = async (req, res, next) => {
       sgst: sgstAmount,
       igst: igstAmount,
       discountAllowed: discountAllowed,
+      ewbNo: ewbNo,
       // ✅ Update payment fields when grandTotal changes
       pendingAmount: newPendingAmount,
       paymentStatus: paymentStatus,
