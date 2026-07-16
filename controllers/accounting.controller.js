@@ -10,10 +10,13 @@ const {
   createReceipt,
   createOpeningBalance,
   applyOnAccountToBill,
+  applyCreditToBill,
   computeBillStatus,
   getCustomerBills,
   getCustomerVouchers,
   getCustomerOnAccountBalance,
+  getCustomerCreditBalance,
+  getCustomerCredits,
   getOnAccountAllocations,
   getReceiptById,
   updateReceipt,
@@ -142,33 +145,46 @@ const recordOpeningBalance = async (req, res) => {
 
 // ── POST /api/accounting/on-account/apply ─────────────────────────────────────
 /**
- * Apply an on-account allocation to a specific bill.
+ * Apply an on-account allocation or credit to a specific bill.
  *
  * Body:
  * {
  *   allocationId: "uuid",   // BillAllocation where billId is null
+ *   creditId:     "uuid",   // CustomerCredit to consume instead of raw allocation
  *   billId:       "uuid",   // Bill to apply it to
  *   amount:       5000      // Optional — partial application
  * }
  */
 const applyOnAccount = async (req, res) => {
   try {
-    const { allocationId, billId, amount } = req.body;
+    const { allocationId, creditId, billId, amount } = req.body;
 
-    if (!allocationId)
-      return res
-        .status(400)
-        .json({ success: false, message: "allocationId is required" });
     if (!billId)
       return res
         .status(400)
         .json({ success: false, message: "billId is required" });
 
-    const updatedBill = await applyOnAccountToBill(
-      allocationId,
-      billId,
-      amount,
-    );
+    if (!allocationId && !creditId) {
+      return res.status(400).json({
+        success: false,
+        message: "allocationId or creditId is required",
+      });
+    }
+    if (allocationId && creditId) {
+      return res.status(400).json({
+        success: false,
+        message: "Provide either allocationId or creditId, not both",
+      });
+    }
+
+    const updatedBill = allocationId
+      ? await applyOnAccountToBill(allocationId, billId, amount)
+      : await applyCreditToBill({
+          creditId,
+          billId,
+          amount,
+          createdBy: req.user?.id ?? null,
+        });
 
     return res.json({
       success: true,
@@ -826,9 +842,10 @@ const getOnAccount = async (req, res) => {
         .json({ success: false, message: "Customer not found" });
     }
 
-    const [balance, allocations] = await Promise.all([
-      getCustomerOnAccountBalance(customerId),
+    const [balance, allocations, credits] = await Promise.all([
+      getCustomerCreditBalance(customerId),
       getOnAccountAllocations(customerId),
+      getCustomerCredits(customerId),
     ]);
 
     return res.json({
@@ -836,6 +853,7 @@ const getOnAccount = async (req, res) => {
       data: {
         balance,
         allocations,
+        credits,
       },
       customer: { id: customer._id, name: customer.name },
     });
@@ -973,6 +991,7 @@ module.exports = {
   getBills,
   getOnAccount,
   getVouchers,
+  getCustomerCredits,
   fetchReceipt,
   editReceipt,
   removeReceipt,

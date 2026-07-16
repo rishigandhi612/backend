@@ -45,22 +45,23 @@ model LedgerAccount {
 }
 
 model Bill {
-  id               String           @id @default(uuid())
-  mongoInvoiceId   String?          @unique
-  invoiceNumber    String           @unique
-  customerId       String
-  billAmount       Decimal          @db.Decimal(12, 2)
-  allocatedAmount  Decimal          @default(0) @db.Decimal(12, 2)
-  isOpeningBalance Boolean          @default(false)
-  invoiceDate      DateTime
-  dueDate          DateTime?
-  financialYear    String
-  openingBalanceId String?          @unique
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
-  allocations      BillAllocation[]
-  invoiceNotes     InvoiceNote[]
-  openingBalance   OpeningBalance?  @relation(fields: [openingBalanceId], references: [id])
+  id                 String              @id @default(uuid())
+  mongoInvoiceId     String?             @unique
+  invoiceNumber      String              @unique
+  customerId         String
+  billAmount         Decimal             @db.Decimal(12, 2)
+  allocatedAmount    Decimal             @default(0) @db.Decimal(12, 2)
+  isOpeningBalance   Boolean             @default(false)
+  invoiceDate        DateTime
+  dueDate            DateTime?
+  financialYear      String
+  openingBalanceId   String?             @unique
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  allocations        BillAllocation[]
+  invoiceNotes       InvoiceNote[]
+  creditConsumptions CreditConsumption[]
+  openingBalance     OpeningBalance?     @relation(fields: [openingBalanceId], references: [id])
 
   @@index([customerId])
   @@index([financialYear])
@@ -89,28 +90,30 @@ model OpeningBalance {
 }
 
 model Voucher {
-  id              String           @id @default(uuid())
-  voucherId       String           @unique
-  customerId      String
-  type            VoucherType
-  totalAmount     Decimal          @db.Decimal(12, 2)
-  onAccountAmount Decimal          @default(0) @db.Decimal(12, 2)
-  paymentMethod   PaymentMethod
-  bankId          String?
-  bankName        String?
-  chequeNumber    String?
-  chequeDate      DateTime?
-  utrNumber       String?
-  upiRef          String?
-  reference       String?
-  narration       String?
-  voucherDate     DateTime
-  financialYear   String
-  createdBy       String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  allocations     BillAllocation[]
-  entries         VoucherEntry[]
+  id                 String              @id @default(uuid())
+  voucherId          String              @unique
+  customerId         String
+  type               VoucherType
+  totalAmount        Decimal             @db.Decimal(12, 2)
+  onAccountAmount    Decimal             @default(0) @db.Decimal(12, 2)
+  paymentMethod      PaymentMethod
+  bankId             String?
+  bankName           String?
+  chequeNumber       String?
+  chequeDate         DateTime?
+  utrNumber          String?
+  upiRef             String?
+  reference          String?
+  narration          String?
+  voucherDate        DateTime
+  financialYear      String
+  createdBy          String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  allocations        BillAllocation[]
+  entries            VoucherEntry[]
+  customerCredits    CustomerCredit[]
+  creditConsumptions CreditConsumption[] @relation("CreditConsumptionVoucher")
 
   @@index([customerId])
   @@index([type])
@@ -139,16 +142,19 @@ model VoucherEntry {
 }
 
 model BillAllocation {
-  id              String   @id @default(uuid())
-  voucherId       String
-  billId          String?
-  customerId      String
-  allocatedAmount Decimal  @db.Decimal(12, 2)
-  narration       String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  bill            Bill?    @relation(fields: [billId], references: [id], onDelete: Restrict)
-  voucher         Voucher  @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+  id                String             @id @default(uuid())
+  voucherId         String
+  billId            String?
+  customerId        String
+  allocatedAmount   Decimal            @db.Decimal(12, 2)
+  narration         String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  bill              Bill?              @relation(fields: [billId], references: [id], onDelete: Restrict)
+  voucher           Voucher            @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+  customerCreditId  String?
+  customerCredit    CustomerCredit?    @relation("BillAllocationCustomerCredit")
+  creditConsumption CreditConsumption?
 
   @@index([voucherId])
   @@index([billId])
@@ -198,6 +204,47 @@ model VoucherCounter {
   @@map("voucher_counters")
 }
 
+model CustomerCredit {
+  id                 String              @id @default(uuid())
+  customerId         String
+  sourceVoucherId    String
+  sourceAllocationId String              @unique
+  amount             Decimal             @db.Decimal(12, 2)
+  consumedAmount     Decimal             @default(0) @db.Decimal(12, 2)
+  status             CreditStatus        @default(OPEN)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  sourceVoucher      Voucher             @relation(fields: [sourceVoucherId], references: [id], onDelete: Restrict)
+  sourceAllocation   BillAllocation      @relation("BillAllocationCustomerCredit", fields: [sourceAllocationId], references: [id], onDelete: Restrict)
+  consumptions       CreditConsumption[]
+
+  @@index([customerId])
+  @@index([customerId, status])
+  @@index([sourceVoucherId])
+  @@map("customer_credits")
+}
+
+model CreditConsumption {
+  id               String          @id @default(uuid())
+  creditId         String
+  billId           String
+  voucherId        String?
+  billAllocationId String?         @unique
+  allocatedAmount  Decimal         @db.Decimal(12, 2)
+  narration        String?
+  createdBy        String?
+  createdAt        DateTime        @default(now())
+  credit           CustomerCredit  @relation(fields: [creditId], references: [id], onDelete: Restrict)
+  bill             Bill            @relation(fields: [billId], references: [id], onDelete: Restrict)
+  voucher          Voucher?        @relation("CreditConsumptionVoucher", fields: [voucherId], references: [id], onDelete: Restrict)
+  billAllocation   BillAllocation? @relation(fields: [billAllocationId], references: [id], onDelete: Restrict)
+
+  @@index([creditId])
+  @@index([billId])
+  @@index([voucherId])
+  @@map("credit_consumptions")
+}
+
 enum LedgerAccountType {
   ACCOUNTS_RECEIVABLE
   BANK_CASH
@@ -209,6 +256,12 @@ enum VoucherType {
   PAYMENT
   CONTRA
   JOURNAL
+}
+
+enum CreditStatus {
+  OPEN
+  EXHAUSTED
+  REVERSED
 }
 
 enum NoteType {

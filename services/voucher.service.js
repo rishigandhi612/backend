@@ -42,7 +42,8 @@ const parseAllocationAmount = (value) => {
 const parseOptionalDate = (value, fieldName) => {
   if (value == null || value === "") return null;
   const date = new Date(value);
-  if (isNaN(date.getTime())) throw new Error(`${fieldName} must be a valid date`);
+  if (isNaN(date.getTime()))
+    throw new Error(`${fieldName} must be a valid date`);
   return date;
 };
 
@@ -73,7 +74,9 @@ const tryDecodeReceiptRef = (value) => {
 
 const getVoucherWhereFromRef = (voucherRef) => {
   const decodedRef = tryDecodeReceiptRef(voucherRef);
-  return decodedRef.includes("/") ? { voucherId: decodedRef } : { id: decodedRef };
+  return decodedRef.includes("/")
+    ? { voucherId: decodedRef }
+    : { id: decodedRef };
 };
 
 const VOUCHER_DETAIL_INCLUDE = {
@@ -195,7 +198,7 @@ const getAccount = async (code) => {
 
 // ── Recalculate Bill.allocatedAmount ──────────────────────────────────────────
 
-const recalculateBillAllocated = async (billId, tx) => {
+const recalculateBillAllocated = async (billId, tx = prisma) => {
   const agg = await tx.billAllocation.aggregate({
     where: { billId },
     _sum: { allocatedAmount: true },
@@ -211,16 +214,452 @@ const recalculateBillAllocated = async (billId, tx) => {
 
 // ── Recalculate Voucher.onAccountAmount ───────────────────────────────────────
 
-const recalculateVoucherOnAccount = async (voucherId, tx) => {
-  const agg = await tx.billAllocation.aggregate({
-    where: { voucherId, billId: null },
-    _sum: { allocatedAmount: true },
+const recalculateVoucherOnAccount = async (voucherId, tx = prisma) => {
+  const agg = await tx.customerCredit.aggregate({
+    where: { sourceVoucherId: voucherId },
+    _sum: { amount: true, consumedAmount: true },
   });
+
+  const onAccountAmount = toFloat(
+    toFloat(agg._sum.amount ?? 0) - toFloat(agg._sum.consumedAmount ?? 0),
+  );
 
   return tx.voucher.update({
     where: { id: voucherId },
-    data: { onAccountAmount: toFloat(agg._sum.allocatedAmount ?? 0) },
+    data: { onAccountAmount },
   });
+};
+
+const computeCreditAvailable = (credit) =>
+  toFloat(toFloat(credit.amount) - toFloat(credit.consumedAmount));
+
+const getCreditStatusForBalance = (available) =>
+  available <= 0.001 ? "EXHAUSTED" : "OPEN";
+
+const createOnAccountAllocationWithCredit = async (
+  tx,
+  voucherId,
+  customerId,
+  allocation,
+) => {
+  const allocationRow = await tx.billAllocation.create({
+    data: {
+      voucherId,
+      billId: null,
+      customerId,
+      allocatedAmount: toFloat(allocation.allocatedAmount),
+      narration: allocation.narration ?? "On-account (unallocated)",
+    },
+  });
+
+  const credit = await tx.customerCredit.create({
+    data: {
+      customerId,
+      sourceVoucherId: voucherId,
+      sourceAllocationId: allocationRow.id,
+      amount: toFloat(allocationRow.allocatedAmount),
+      consumedAmount: 0,
+      status: "OPEN",
+    },
+  });
+
+  await tx.billAllocation.update({
+    where: { id: allocationRow.id },
+    data: { customerCreditId: credit.id },
+  });
+
+  return allocationRow;
+};
+
+const splitReceiptAllocationsByFunding = (
+  finalAllocations,
+  amount,
+) => {
+  const positiveBillAllocations = finalAllocations.filter(
+    (a) => a.billId != null && toFloat(a.allocatedAmount) > 0,
+  );
+  const billAdjustmentAllocations = finalAllocations.filter(
+    (a) => a.billId != null && toFloat(a.allocatedAmount) < 0,
+  );
+  const onAccountAllocations = finalAllocations.filter((a) => a.billId == null);
+  const positiveOnAccountAmount = toFloat(
+    onAccountAllocations
+      .filter((a) => toFloat(a.allocatedAmount) > 0)
+      .reduce((sum, a) => sum + toFloat(a.allocatedAmount), 0),
+  );
+  const creditConsumptionAmount = toFloat(
+    Math.abs(
+      onAccountAllocations
+        .filter((a) => toFloat(a.allocatedAmount) < 0)
+        .reduce((sum, a) => sum + toFloat(a.allocatedAmount), 0),
+    ),
+  );
+
+  if (creditConsumptionAmount > 0.001 && positiveBillAllocations.length === 0) {
+    throw new Error("Negative on-account allocations must be applied to bills");
+  }
+
+  const nonCreditFundingForBills = toFloat(
+    amount -
+      positiveOnAccountAmount +
+      Math.abs(
+        billAdjustmentAllocations.reduce(
+          (sum, a) => sum + toFloat(a.allocatedAmount),
+          0,
+        ),
+      ),
+  );
+  if (nonCreditFundingForBills < -0.001) {
+    throw new Error("On-account credit cannot exceed receipt totalAmount");
+  }
+
+  let remainingNonCreditFunding = Math.max(0, nonCreditFundingForBills);
+  const cashBillAllocations = [];
+  const creditApplications = [];
+
+  for (const allocation of positiveBillAllocations) {
+    const requestedAmount = toFloat(allocation.allocatedAmount);
+    const cashAmount = toFloat(
+      Math.min(requestedAmount, remainingNonCreditFunding),
+    );
+    const creditAmount = toFloat(requestedAmount - cashAmount);
+
+    if (cashAmount > 0.001) {
+      cashBillAllocations.push({
+        ...allocation,
+        allocatedAmount: cashAmount,
+      });
+    }
+
+    if (creditAmount > 0.001) {
+      creditApplications.push({
+        billId: allocation.billId,
+        allocatedAmount: creditAmount,
+        narration: allocation.narration ?? "Applied from on-account",
+      });
+    }
+
+    remainingNonCreditFunding = toFloat(remainingNonCreditFunding - cashAmount);
+  }
+
+  const splitCreditAmount = toFloat(
+    creditApplications.reduce(
+      (sum, allocation) => sum + toFloat(allocation.allocatedAmount),
+      0,
+    ),
+  );
+
+  if (Math.abs(splitCreditAmount - creditConsumptionAmount) > 0.001) {
+    throw new Error(
+      `Negative on-account total (${creditConsumptionAmount}) must match bill allocations funded from credit (${splitCreditAmount})`,
+    );
+  }
+
+  return {
+    cashBillAllocations,
+    creditApplications,
+    billAdjustmentAllocations,
+    positiveOnAccountAmount,
+    positiveOnAccountAllocations: onAccountAllocations.filter(
+      (a) => toFloat(a.allocatedAmount) > 0,
+    ),
+  };
+};
+
+const getAvailableCustomerCreditsTx = async (
+  tx,
+  customerId,
+  { excludeSourceVoucherId = null } = {},
+) => {
+  const credits = await tx.customerCredit.findMany({
+    where: {
+      customerId,
+      status: { not: "REVERSED" },
+      ...(excludeSourceVoucherId
+        ? { sourceVoucherId: { not: excludeSourceVoucherId } }
+        : {}),
+    },
+    select: { amount: true, consumedAmount: true },
+  });
+
+  return toFloat(
+    credits.reduce((sum, credit) => sum + computeCreditAvailable(credit), 0),
+  );
+};
+
+const assertSufficientCustomerCreditsTx = async (
+  tx,
+  { customerId, requiredAmount, excludeSourceVoucherId = null },
+) => {
+  const required = toFloat(requiredAmount);
+  if (required <= 0.001) return;
+
+  const available = await getAvailableCustomerCreditsTx(tx, customerId, {
+    excludeSourceVoucherId,
+  });
+
+  if (available + 0.001 < required) {
+    throw new Error(
+      `Insufficient on-account balance. Required ${required}, available ${available}`,
+    );
+  }
+};
+
+const consumeCustomerCreditsForBillTx = async (
+  tx,
+  {
+    customerId,
+    billId,
+    amount,
+    voucherId = null,
+    excludeSourceVoucherId = null,
+    createdBy = null,
+    narration = "Applied from on-account",
+  },
+) => {
+  const applyAmount = parsePositiveAmount(amount, "on-account amount");
+  await assertSufficientCustomerCreditsTx(tx, {
+    customerId,
+    requiredAmount: applyAmount,
+    excludeSourceVoucherId,
+  });
+
+  const credits = await tx.customerCredit.findMany({
+    where: {
+      customerId,
+      status: { not: "REVERSED" },
+      ...(excludeSourceVoucherId
+        ? { sourceVoucherId: { not: excludeSourceVoucherId } }
+        : {}),
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  let remaining = applyAmount;
+  const touchedCreditVoucherIds = new Set();
+
+  for (const credit of credits) {
+    if (remaining <= 0.001) break;
+
+    const available = computeCreditAvailable(credit);
+    if (available <= 0.001) continue;
+
+    const consumedNow = toFloat(Math.min(available, remaining));
+    const allocationRow = await tx.billAllocation.create({
+      data: {
+        voucherId: voucherId ?? credit.sourceVoucherId,
+        billId,
+        customerId,
+        allocatedAmount: consumedNow,
+        narration,
+        customerCreditId: credit.id,
+      },
+    });
+
+    await tx.creditConsumption.create({
+      data: {
+        creditId: credit.id,
+        billId,
+        voucherId: voucherId ?? null,
+        billAllocationId: allocationRow.id,
+        allocatedAmount: consumedNow,
+        narration,
+        createdBy: createdBy ?? null,
+      },
+    });
+
+    const updatedConsumedAmount = toFloat(
+      toFloat(credit.consumedAmount) + consumedNow,
+    );
+    await tx.customerCredit.update({
+      where: { id: credit.id },
+      data: {
+        consumedAmount: updatedConsumedAmount,
+        status: getCreditStatusForBalance(
+          toFloat(toFloat(credit.amount) - updatedConsumedAmount),
+        ),
+      },
+    });
+
+    touchedCreditVoucherIds.add(credit.sourceVoucherId);
+    remaining = toFloat(remaining - consumedNow);
+  }
+
+  if (remaining > 0.001) {
+    throw new Error(
+      `Insufficient on-account balance. Required ${applyAmount}, available ${toFloat(applyAmount - remaining)}`,
+    );
+  }
+
+  for (const sourceVoucherId of touchedCreditVoucherIds) {
+    await recalculateVoucherOnAccount(sourceVoucherId, tx);
+  }
+};
+
+const reverseReceiptCreditConsumptionsTx = async (tx, voucherId) => {
+  const consumptions = await tx.creditConsumption.findMany({
+    where: { voucherId },
+    include: { credit: true },
+  });
+
+  const affectedBillIds = [];
+  const allocationIds = [];
+  const sourceVoucherIds = new Set();
+
+  for (const consumption of consumptions) {
+    affectedBillIds.push(consumption.billId);
+    if (consumption.billAllocationId) {
+      allocationIds.push(consumption.billAllocationId);
+    }
+
+    const updatedConsumedAmount = toFloat(
+      toFloat(consumption.credit.consumedAmount) -
+        toFloat(consumption.allocatedAmount),
+    );
+    await tx.customerCredit.update({
+      where: { id: consumption.creditId },
+      data: {
+        consumedAmount: Math.max(0, updatedConsumedAmount),
+        status: getCreditStatusForBalance(
+          toFloat(toFloat(consumption.credit.amount) - updatedConsumedAmount),
+        ),
+      },
+    });
+    sourceVoucherIds.add(consumption.credit.sourceVoucherId);
+  }
+
+  if (consumptions.length > 0) {
+    await tx.creditConsumption.deleteMany({
+      where: { id: { in: consumptions.map((consumption) => consumption.id) } },
+    });
+  }
+
+  if (allocationIds.length > 0) {
+    await tx.billAllocation.deleteMany({
+      where: { id: { in: allocationIds } },
+    });
+  }
+
+  for (const sourceVoucherId of sourceVoucherIds) {
+    await recalculateVoucherOnAccount(sourceVoucherId, tx);
+  }
+
+  return affectedBillIds;
+};
+
+/**
+ * Customer's available on-account / credit balance.
+ *
+ * Sums every CustomerCredit's (amount - consumedAmount) for this customer, excluding REVERSED
+ * credits, plus the raw allocatedAmount of any not-yet-converted legacy on-account row
+ * (billId: null, customerCreditId: null).
+ */
+const getCustomerCreditBalance = async (customerId) => {
+  const [creditAgg, legacyAgg] = await Promise.all([
+    prisma.customerCredit.aggregate({
+      where: { customerId, status: { not: "REVERSED" } },
+      _sum: { amount: true, consumedAmount: true },
+    }),
+    prisma.billAllocation.aggregate({
+      where: {
+        customerId,
+        billId: null,
+        customerCreditId: null,
+      },
+      _sum: { allocatedAmount: true },
+    }),
+  ]);
+
+  return toFloat(
+    toFloat(creditAgg._sum.amount ?? 0) -
+      toFloat(creditAgg._sum.consumedAmount ?? 0) +
+      toFloat(legacyAgg._sum.allocatedAmount ?? 0),
+  );
+};
+
+/**
+ * Alias kept for existing callers. Previously this summed BillAllocation.allocatedAmount
+ * directly for billId:null rows, ignoring consumedAmount entirely — which overstated the
+ * balance as soon as any credit was partially applied via applyCreditToBill. Delegating to
+ * getCustomerCreditBalance keeps both names returning the same, correct number going forward.
+ */
+const getCustomerOnAccountBalance = async (customerId) =>
+  getCustomerCreditBalance(customerId);
+
+const getCustomerCredits = async (customerId) =>
+  prisma.customerCredit.findMany({
+    where: { customerId, status: { not: "REVERSED" } },
+    orderBy: { createdAt: "asc" },
+    include: { sourceVoucher: true, sourceAllocation: true },
+  });
+
+const applyCreditToBill = async ({ creditId, billId, amount, createdBy }) =>
+  prisma.$transaction(async (tx) =>
+    applyCreditToBillTx(tx, creditId, billId, amount, createdBy),
+  );
+
+const applyCreditToBillTx = async (tx, creditId, billId, amount, createdBy) => {
+  const credit = await tx.customerCredit.findUnique({
+    where: { id: creditId },
+  });
+  if (!credit) throw new Error(`CustomerCredit ${creditId} not found`);
+
+  const bill = await tx.bill.findUnique({ where: { id: billId } });
+  if (!bill) throw new Error(`Bill ${billId} not found`);
+  if (bill.customerId !== credit.customerId) {
+    throw new Error("Bill and credit belong to different customers");
+  }
+
+  const available = computeCreditAvailable(credit);
+  if (available <= 0.001) {
+    throw new Error(`CustomerCredit ${creditId} has no available balance`);
+  }
+
+  const applyAmount =
+    amount == null ? available : parsePositiveAmount(amount, "amount");
+  if (applyAmount > available + 0.001) {
+    throw new Error(
+      `Cannot apply ${applyAmount} — credit only has ${available}`,
+    );
+  }
+
+  const allocationRow = await tx.billAllocation.create({
+    data: {
+      voucherId: credit.sourceVoucherId,
+      billId,
+      customerId: credit.customerId,
+      allocatedAmount: applyAmount,
+      narration: "Applied from on-account",
+      customerCreditId: credit.id,
+    },
+  });
+
+  await tx.creditConsumption.create({
+    data: {
+      creditId,
+      billId,
+      billAllocationId: allocationRow.id,
+      allocatedAmount: applyAmount,
+      narration: "Applied from on-account",
+      createdBy: createdBy ?? null,
+    },
+  });
+
+  const updatedConsumedAmount = toFloat(credit.consumedAmount) + applyAmount;
+  await tx.customerCredit.update({
+    where: { id: credit.id },
+    data: {
+      consumedAmount: updatedConsumedAmount,
+      status: getCreditStatusForBalance(
+        toFloat(toFloat(credit.amount) - updatedConsumedAmount),
+      ),
+    },
+  });
+
+  const updatedBill = await recalculateBillAllocated(billId, tx);
+  await recalculateVoucherOnAccount(credit.sourceVoucherId, tx);
+
+  return hydrateBill(updatedBill);
 };
 
 const hydrateVoucher = (voucher) => ({
@@ -272,19 +711,15 @@ const validateReceiptAllocations = async (
     }, 0),
   );
 
-  // if (providedSum > amount + 0.001) {
-  //   throw new Error(
-  //     `Allocation total (${providedSum}) cannot exceed totalAmount (${amount})`,
-  //   );
-  // }
-
-  const negativeOnAccount = allocations.find(
-    (allocation) =>
-      allocation.billId == null && toFloat(allocation.allocatedAmount) < 0,
-  );
-  if (negativeOnAccount) {
-    throw new Error("Negative allocations must be linked to an overpaid bill");
+  if (providedSum > amount + 0.001) {
+    throw new Error(
+      `Allocation total (${providedSum}) cannot exceed totalAmount (${amount})`,
+    );
   }
+
+  // Negative on-account allocations (billId == null) are allowed — they
+  // reduce the customer's on-account balance. Negative allocations that
+  // reference specific bills are validated below against overpaid amounts.
 
   const billIds = allocations
     .filter((allocation) => allocation.billId != null)
@@ -302,7 +737,9 @@ const validateReceiptAllocations = async (
       throw new Error(`Bills not found: ${missing.join(", ")}`);
     }
 
-    const wrongCustomer = bills.filter((bill) => bill.customerId !== customerId);
+    const wrongCustomer = bills.filter(
+      (bill) => bill.customerId !== customerId,
+    );
     if (wrongCustomer.length > 0) {
       throw new Error(
         `Bills do not belong to customer ${customerId}: ` +
@@ -346,17 +783,25 @@ const validateReceiptAllocations = async (
         }
       }
 
-      const billById = new Map(bills.map((bill) => [bill.id, bill]));
+      const billsWithPostedNotes = await enrichBillsWithPostedNotes(bills);
+      const billById = new Map(
+        billsWithPostedNotes.map((bill) => [bill.id, bill]),
+      );
       for (const billId of negativeBillIds) {
         const bill = billById.get(billId);
         const baseAllocated = toFloat(
           toFloat(bill.allocatedAmount) -
             (oldAllocationSumByBillId.get(billId) ?? 0),
         );
-        const availableOverpaid = toFloat(baseAllocated - toFloat(bill.billAmount));
+        const availableOverpaid = toFloat(
+          baseAllocated - toFloat(bill.adjustedAmount ?? bill.billAmount),
+        );
         const requestedAdjustment = Math.abs(netByBillId.get(billId));
 
-        if (availableOverpaid <= 0 || requestedAdjustment > availableOverpaid + 0.001) {
+        if (
+          availableOverpaid <= 0 ||
+          requestedAdjustment > availableOverpaid + 0.001
+        ) {
           throw new Error(
             `Negative allocation ${requestedAdjustment} exceeds overpaid amount ` +
               `${Math.max(availableOverpaid, 0)} for bill ${bill.invoiceNumber}`,
@@ -378,8 +823,21 @@ const buildAllocationsWithRemainder = async (
   const normalized = (allocations ?? []).map((allocation) => {
     const allocatedAmount = parseAllocationAmount(allocation.allocatedAmount);
 
+    // accept sentinel values for explicit on-account such as "ON-ACCOUNT"
+    let billId = allocation.billId ?? null;
+    if (typeof billId === "string") {
+      const sentinel = billId.trim().toUpperCase();
+      if (
+        sentinel === "ON-ACCOUNT" ||
+        sentinel === "ON ACCOUNT" ||
+        sentinel === "ON_ACCOUNT"
+      ) {
+        billId = null;
+      }
+    }
+
     return {
-      billId: allocation.billId ?? null,
+      billId,
       allocatedAmount,
       narration: allocation.narration ?? null,
     };
@@ -410,7 +868,10 @@ const preserveAllocationsForAmountChange = async (
   customerId,
 ) => {
   const billAllocations = existingAllocations
-    .filter((allocation) => allocation.billId != null)
+    .filter(
+      (allocation) =>
+        allocation.billId != null && allocation.customerCreditId == null,
+    )
     .map((allocation) => ({
       billId: allocation.billId,
       allocatedAmount: toFloat(allocation.allocatedAmount),
@@ -451,6 +912,198 @@ const preserveAllocationsForAmountChange = async (
   );
 
   return { finalAllocations, billIds };
+};
+
+/**
+ * Reconcile a voucher's BillAllocation rows against a fresh allocation payload, WITHOUT ever
+ * deleting a CustomerCredit. This exists because the naive "deleteMany then createMany" approach
+ * violates the customer_credits_sourceAllocationId_fkey (onDelete: Restrict) the moment any
+ * on-account allocation for this voucher already has a CustomerCredit pointing at it -- which is
+ * true for every voucher that has ever had an on-account remainder, including all backfilled ones.
+ *
+ * Rules (per product decision):
+ *   - Bill-targeted allocations (billId != null) never have a CustomerCredit attached
+ *     (only on-account rows get one, via createOnAccountAllocationWithCredit). These are always
+ *     safe to delete-and-recreate freely.
+ *   - The on-account allocation (billId == null), if one exists on the old AND/OR new side, is
+ *     never deleted. Its CustomerCredit.amount is adjusted in place to match the new remainder.
+ *   - If the new remainder would drop the credit's amount below what's already been consumed
+ *     (CreditConsumption history exists against it), the edit is REJECTED with a clear error --
+ *     the receipt no longer has enough unconsumed money to honor what's already been applied to
+ *     a bill. The caller must reverse/adjust that consumption first; this function will not
+ *     silently destroy or shrink consumed history.
+ */
+const reconcileAllocationsForUpdate = async (
+  tx,
+  { voucherId, customerId, amount, finalAllocations, oldBillIds, newBillIds },
+) => {
+  const reversedCreditBillIds = await reverseReceiptCreditConsumptionsTx(
+    tx,
+    voucherId,
+  );
+  const {
+    cashBillAllocations: billTargeted,
+    creditApplications,
+    billAdjustmentAllocations,
+    positiveOnAccountAmount: newCreditAmount,
+    positiveOnAccountAllocations,
+  } = splitReceiptAllocationsByFunding(finalAllocations, amount);
+  const creditNarration =
+    positiveOnAccountAllocations[0]?.narration ?? "On-account (unallocated)";
+  const totalCreditApplicationAmount = toFloat(
+    creditApplications.reduce(
+      (sum, application) => sum + toFloat(application.allocatedAmount),
+      0,
+    ),
+  );
+
+  await assertSufficientCustomerCreditsTx(tx, {
+    customerId,
+    requiredAmount: totalCreditApplicationAmount,
+    excludeSourceVoucherId: voucherId,
+  });
+
+  // Normal bill-targeted receipt rows are safe to replace. Credit-backed rows
+  // are application history and must remain tied to their CustomerCredit.
+  await tx.billAllocation.deleteMany({
+    where: { voucherId, billId: { not: null }, customerCreditId: null },
+  });
+  if (billTargeted.length > 0) {
+    await tx.billAllocation.createMany({
+      data: billTargeted.map((a) => ({
+        voucherId,
+        billId: a.billId,
+        customerId,
+        allocatedAmount: a.allocatedAmount,
+        narration: a.narration,
+      })),
+    });
+  }
+  if (billAdjustmentAllocations.length > 0) {
+    await tx.billAllocation.createMany({
+      data: billAdjustmentAllocations.map((a) => ({
+        voucherId,
+        billId: a.billId,
+        customerId,
+        allocatedAmount: a.allocatedAmount,
+        narration: a.narration,
+      })),
+    });
+  }
+
+  // Remove stale plain adjustment rows. We recreate them below only when the
+  // voucher does not already have its own credit-backed source row.
+  await tx.billAllocation.deleteMany({
+    where: { voucherId, billId: null, customerCreditId: null },
+  });
+
+  // The existing credit-backed on-account row (if any) for this voucher.
+  const existingOnAccountAllocations = await tx.billAllocation.findMany({
+    where: { voucherId, billId: null, customerCreditId: { not: null } },
+    include: { customerCredit: true },
+    orderBy: { createdAt: "asc" },
+  });
+  if (existingOnAccountAllocations.length > 1) {
+    throw new Error(
+      "This receipt has multiple on-account credit rows. Consolidate those credits before editing the receipt.",
+    );
+  }
+  const existingOnAccountAllocation = existingOnAccountAllocations[0] ?? null;
+
+  const existingCredit = existingOnAccountAllocation?.customerCredit ?? null;
+
+  if (!existingCredit) {
+    // Nothing to preserve. Either this voucher never had an on-account remainder, or it
+    // only has plain adjustment rows handled above.
+    for (const creditApplication of creditApplications) {
+      await consumeCustomerCreditsForBillTx(tx, {
+        customerId,
+        billId: creditApplication.billId,
+        amount: creditApplication.allocatedAmount,
+        voucherId,
+        excludeSourceVoucherId: voucherId,
+        narration: creditApplication.narration ?? "Applied from on-account",
+      });
+    }
+    if (newCreditAmount > 0.001) {
+      await createOnAccountAllocationWithCredit(tx, voucherId, customerId, {
+        billId: null,
+        allocatedAmount: newCreditAmount,
+        narration: creditNarration,
+      });
+    }
+    const affectedBillIds = [
+      ...new Set([...oldBillIds, ...newBillIds, ...reversedCreditBillIds]),
+    ];
+    for (const billId of affectedBillIds) {
+      await recalculateBillAllocated(billId, tx);
+    }
+    return;
+  }
+
+  const consumedAmount = toFloat(existingCredit.consumedAmount);
+  const newAmount = newCreditAmount;
+
+  if (newAmount < consumedAmount - 0.001) {
+    throw new Error(
+      `Cannot reduce on-account credit to ${newAmount} — ${consumedAmount} of it has already ` +
+        `been applied to a bill. Reverse that application before reducing this receipt's amount ` +
+        `or allocations.`,
+    );
+  }
+
+  if (consumedAmount > 0.001 && customerId !== existingCredit.customerId) {
+    throw new Error(
+      `Cannot change this receipt's customer — ${consumedAmount} of its on-account credit has ` +
+        `already been applied to a bill for the original customer. Reverse that application first.`,
+    );
+  }
+
+  for (const creditApplication of creditApplications) {
+    await consumeCustomerCreditsForBillTx(tx, {
+      customerId,
+      billId: creditApplication.billId,
+      amount: creditApplication.allocatedAmount,
+      voucherId,
+      excludeSourceVoucherId: voucherId,
+      narration: creditApplication.narration ?? "Applied from on-account",
+    });
+  }
+
+  // Adjust the credit and its backing allocation in place. Never delete.
+  await tx.customerCredit.update({
+    where: { id: existingCredit.id },
+    data: {
+      customerId,
+      amount: newAmount,
+      status: newAmount - consumedAmount <= 0.001 ? "EXHAUSTED" : "OPEN",
+    },
+  });
+
+  if (newAmount > 0.001) {
+    await tx.billAllocation.update({
+      where: { id: existingOnAccountAllocation.id },
+      data: {
+        customerId,
+        allocatedAmount: newAmount,
+        narration: creditNarration ?? existingOnAccountAllocation.narration,
+      },
+    });
+  } else {
+    // No on-account remainder anymore, but consumedAmount may be > 0 (fully exhausted is fine —
+    // amount was just set to consumedAmount above, so the row is allowed to stay at that value).
+    await tx.billAllocation.update({
+      where: { id: existingOnAccountAllocation.id },
+      data: { customerId, allocatedAmount: newAmount },
+    });
+  }
+
+  const affectedBillIds = [
+    ...new Set([...oldBillIds, ...newBillIds, ...reversedCreditBillIds]),
+  ];
+  for (const billId of affectedBillIds) {
+    await recalculateBillAllocated(billId, tx);
+  }
 };
 
 const updateReceipt = async (voucherRef, params = {}) => {
@@ -577,25 +1230,14 @@ const updateReceipt = async (voucherRef, params = {}) => {
       });
 
       if (allocationPayload) {
-        await tx.billAllocation.deleteMany({
-          where: { voucherId: existing.id },
+        await reconcileAllocationsForUpdate(tx, {
+          voucherId: existing.id,
+          customerId,
+          amount,
+          finalAllocations: allocationPayload.finalAllocations,
+          oldBillIds,
+          newBillIds: allocationPayload.billIds,
         });
-        await tx.billAllocation.createMany({
-          data: allocationPayload.finalAllocations.map((allocation) => ({
-            voucherId: existing.id,
-            billId: allocation.billId,
-            customerId,
-            allocatedAmount: allocation.allocatedAmount,
-            narration: allocation.narration,
-          })),
-        });
-
-        const affectedBillIds = [
-          ...new Set([...oldBillIds, ...allocationPayload.billIds]),
-        ];
-        for (const billId of affectedBillIds) {
-          await recalculateBillAllocated(billId, tx);
-        }
       }
 
       await recalculateVoucherOnAccount(existing.id, tx);
@@ -633,11 +1275,33 @@ const deleteReceipt = async (voucherRef) => {
 
   await prisma.$transaction(
     async (tx) => {
+      const reversedCreditBillIds = await reverseReceiptCreditConsumptionsTx(
+        tx,
+        voucher.id,
+      );
+      const credits = await tx.customerCredit.findMany({
+        where: { sourceVoucherId: voucher.id },
+      });
+
+      const creditIds = credits.map((credit) => credit.id);
+
+      await tx.creditConsumption.deleteMany({
+        where: { creditId: { in: creditIds } },
+      });
+      await tx.billAllocation.deleteMany({
+        where: { customerCreditId: { in: creditIds } },
+      });
+      await tx.customerCredit.deleteMany({
+        where: { id: { in: creditIds } },
+      });
+
       await tx.voucher.delete({
         where: { id: voucher.id },
       });
 
-      for (const billId of affectedBillIds) {
+      for (const billId of [
+        ...new Set([...affectedBillIds, ...reversedCreditBillIds]),
+      ]) {
         await recalculateBillAllocated(billId, tx);
       }
     },
@@ -769,16 +1433,72 @@ const createReceipt = async (params) => {
         ],
       });
 
-      // 3. Bill allocations
-      await tx.billAllocation.createMany({
-        data: finalAllocations.map((a) => ({
-          voucherId: voucher.id,
-          billId: a.billId ?? null,
-          customerId,
-          allocatedAmount: toFloat(a.allocatedAmount),
-          narration: a.narration ?? null,
-        })),
+      // 3. Bill allocations. Positive on-account creates a CustomerCredit.
+      // Negative on-account consumes existing credits and applies them to bills.
+      const {
+        cashBillAllocations,
+        creditApplications,
+        billAdjustmentAllocations,
+        positiveOnAccountAmount,
+        positiveOnAccountAllocations,
+      } = splitReceiptAllocationsByFunding(finalAllocations, amount);
+      const totalCreditApplicationAmount = toFloat(
+        creditApplications.reduce(
+          (sum, application) => sum + toFloat(application.allocatedAmount),
+          0,
+        ),
+      );
+
+      await assertSufficientCustomerCreditsTx(tx, {
+        customerId,
+        requiredAmount: totalCreditApplicationAmount,
+        excludeSourceVoucherId: voucher.id,
       });
+
+      if (cashBillAllocations.length > 0) {
+        await tx.billAllocation.createMany({
+          data: cashBillAllocations.map((a) => ({
+            voucherId: voucher.id,
+            billId: a.billId,
+            customerId,
+            allocatedAmount: toFloat(a.allocatedAmount),
+            narration: a.narration ?? null,
+          })),
+        });
+      }
+      if (billAdjustmentAllocations.length > 0) {
+        await tx.billAllocation.createMany({
+          data: billAdjustmentAllocations.map((a) => ({
+            voucherId: voucher.id,
+            billId: a.billId,
+            customerId,
+            allocatedAmount: toFloat(a.allocatedAmount),
+            narration: a.narration ?? null,
+          })),
+        });
+      }
+
+      for (const creditApplication of creditApplications) {
+        await consumeCustomerCreditsForBillTx(tx, {
+          customerId,
+          billId: creditApplication.billId,
+          amount: creditApplication.allocatedAmount,
+          voucherId: voucher.id,
+          excludeSourceVoucherId: voucher.id,
+          createdBy: createdBy ?? null,
+          narration: creditApplication.narration ?? "Applied from on-account",
+        });
+      }
+
+      if (positiveOnAccountAmount > 0.001) {
+        await createOnAccountAllocationWithCredit(tx, voucher.id, customerId, {
+          billId: null,
+          allocatedAmount: positiveOnAccountAmount,
+          narration:
+            positiveOnAccountAllocations[0]?.narration ??
+            "On-account (unallocated)",
+        });
+      }
 
       // 4. Recalculate allocatedAmount on each affected Bill
       for (const billId of [...new Set(billIds)]) {
@@ -821,11 +1541,30 @@ const applyOnAccountToBill = async (allocationId, billId, amount) => {
   if (allocation.billId !== null)
     throw new Error("This allocation is already applied to a bill");
 
-  const applyAmount = amount
-    ? toFloat(amount)
-    : toFloat(allocation.allocatedAmount);
+  if (allocation.customerCreditId) {
+    return prisma.$transaction(async (tx) =>
+      applyCreditToBillTx(
+        tx,
+        allocation.customerCreditId,
+        billId,
+        amount,
+        null,
+      ),
+    );
+  }
 
-  if (applyAmount > toFloat(allocation.allocatedAmount) + 0.001) {
+  const availableAllocationAmount = toFloat(allocation.allocatedAmount);
+  if (availableAllocationAmount <= 0) {
+    throw new Error(
+      `Allocation ${allocationId} does not have a positive on-account balance`,
+    );
+  }
+
+  const applyAmount = amount
+    ? parsePositiveAmount(amount, "amount")
+    : availableAllocationAmount;
+
+  if (applyAmount > availableAllocationAmount + 0.001) {
     throw new Error(
       `Cannot apply ${applyAmount} — allocation only has ${allocation.allocatedAmount}`,
     );
@@ -843,7 +1582,7 @@ const applyOnAccountToBill = async (allocationId, billId, amount) => {
       await tx.billAllocation.update({
         where: { id: allocationId },
         data: {
-          allocatedAmount: toFloat(allocation.allocatedAmount) - applyAmount,
+          allocatedAmount: availableAllocationAmount - applyAmount,
         },
       });
       await tx.billAllocation.create({
@@ -947,18 +1686,10 @@ const getCustomerBills = async (customerId, opts = {}) => {
   return hydrated;
 };
 
-const getCustomerOnAccountBalance = async (customerId) => {
-  const agg = await prisma.billAllocation.aggregate({
-    where: { customerId, billId: null },
-    _sum: { allocatedAmount: true },
-  });
-  return toFloat(agg._sum.allocatedAmount ?? 0);
-};
-
 const getOnAccountAllocations = async (customerId) => {
   return prisma.billAllocation.findMany({
     where: { customerId, billId: null },
-    include: { voucher: true },
+    include: { voucher: true, customerCredit: true },
     orderBy: { createdAt: "asc" },
   });
 };
@@ -972,7 +1703,9 @@ const getCustomerVouchers = async (
   const [vouchers, total] = await Promise.all([
     prisma.voucher.findMany({
       where: { customerId },
-      include: { allocations: { include: { bill: true } } },
+      include: {
+        allocations: { include: { bill: true, customerCredit: true } },
+      },
       orderBy: { voucherDate: "desc" },
       skip,
       take: limit,
@@ -996,12 +1729,15 @@ module.exports = {
   createReceipt,
   createOpeningBalance,
   applyOnAccountToBill,
+  applyCreditToBill,
   getReceiptById,
   updateReceipt,
   deleteReceipt,
   getCustomerBills,
   getCustomerVouchers,
   getCustomerOnAccountBalance,
+  getCustomerCreditBalance,
+  getCustomerCredits,
   getOnAccountAllocations,
   computeBillStatus,
   hydrateBill,
