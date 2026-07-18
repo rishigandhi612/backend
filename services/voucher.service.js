@@ -554,10 +554,25 @@ const reverseReceiptCreditConsumptionsTx = async (tx, voucherId) => {
  * credits, plus the raw allocatedAmount of any not-yet-converted legacy on-account row
  * (billId: null, customerCreditId: null).
  */
-const getCustomerCreditBalance = async (customerId) => {
+const getVoucherDateFilter = ({ startDate, endDate } = {}) => {
+  if (!startDate && !endDate) return null;
+  return {
+    ...(startDate ? { gte: new Date(startDate) } : {}),
+    ...(endDate ? { lte: new Date(endDate) } : {}),
+  };
+};
+
+const getCustomerCreditBalance = async (customerId, opts = {}) => {
+  const voucherDateFilter = getVoucherDateFilter(opts);
   const [creditAgg, legacyAgg] = await Promise.all([
     prisma.customerCredit.aggregate({
-      where: { customerId, status: { not: "REVERSED" } },
+      where: {
+        customerId,
+        status: { not: "REVERSED" },
+        ...(voucherDateFilter
+          ? { sourceVoucher: { voucherDate: voucherDateFilter } }
+          : {}),
+      },
       _sum: { amount: true, consumedAmount: true },
     }),
     prisma.billAllocation.aggregate({
@@ -565,16 +580,19 @@ const getCustomerCreditBalance = async (customerId) => {
         customerId,
         billId: null,
         customerCreditId: null,
+        ...(voucherDateFilter ? { voucher: { voucherDate: voucherDateFilter } } : {}),
       },
       _sum: { allocatedAmount: true },
     }),
   ]);
 
-  return toFloat(
+  const availableBalance = toFloat(
     toFloat(creditAgg._sum.amount ?? 0) -
       toFloat(creditAgg._sum.consumedAmount ?? 0) +
       toFloat(legacyAgg._sum.allocatedAmount ?? 0),
   );
+
+  return Math.max(0, availableBalance);
 };
 
 /**
@@ -583,8 +601,8 @@ const getCustomerCreditBalance = async (customerId) => {
  * balance as soon as any credit was partially applied via applyCreditToBill. Delegating to
  * getCustomerCreditBalance keeps both names returning the same, correct number going forward.
  */
-const getCustomerOnAccountBalance = async (customerId) =>
-  getCustomerCreditBalance(customerId);
+const getCustomerOnAccountBalance = async (customerId, opts = {}) =>
+  getCustomerCreditBalance(customerId, opts);
 
 const getCustomerCredits = async (customerId) =>
   prisma.customerCredit.findMany({
@@ -1668,16 +1686,23 @@ const createOpeningBalance = async (params) => {
 // ── Queries ────────────────────────────────────────────────────────────────────
 
 const getCustomerBills = async (customerId, opts = {}) => {
-  const { status, financialYear } = opts;
+  const { status, financialYear, startDate, endDate, asOfDate } = opts;
 
   const where = { customerId };
-  if (financialYear) where.financialYear = financialYear;
+  if (startDate || endDate) {
+    where.invoiceDate = {
+      ...(startDate ? { gte: new Date(startDate) } : {}),
+      ...(endDate ? { lte: new Date(endDate) } : {}),
+    };
+  } else if (financialYear) {
+    where.financialYear = financialYear;
+  }
 
   const bills = await prisma.bill.findMany({
     where,
     orderBy: { invoiceDate: "asc" },
   });
-  const hydrated = await enrichBillsWithPostedNotes(bills);
+  const hydrated = await enrichBillsWithPostedNotes(bills, { asOfDate });
 
   if (status && status.length > 0) {
     return hydrated.filter((b) => status.includes(b.status));

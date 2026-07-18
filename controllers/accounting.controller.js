@@ -26,6 +26,10 @@ const {
   createInvoiceNote,
   listInvoiceNotes,
 } = require("../services/invoiceNote.service");
+const {
+  getCustomerLedger,
+  resolveDateRange,
+} = require("../services/ledger.service");
 
 // ── POST /api/accounting/receipts ─────────────────────────────────────────────
 /**
@@ -672,11 +676,12 @@ const getInvoiceNotes = async (req, res) => {
  * Query params:
  *   status        - UNPAID | PARTIAL | PAID | OVERPAID (comma-separated, optional)
  *   financialYear - "2024-25" (optional)
+ *   startDate/endDate - explicit date range (overrides financialYear)
  */
 const getBills = async (req, res) => {
   try {
     const { customerId } = req.params;
-    const { status, financialYear } = req.query;
+    const { status, financialYear, startDate, endDate } = req.query;
 
     const customer = await Customer.findById(customerId);
     if (!customer) {
@@ -689,19 +694,39 @@ const getBills = async (req, res) => {
       status && status.trim()
         ? status.split(",").map((s) => s.trim().toUpperCase())
         : undefined;
+    const reportDateRange = resolveDateRange({
+      financialYear,
+      startDate,
+      endDate,
+    });
 
-    const [allBills, onAccountBalance] = await Promise.all([
-      getCustomerBills(customerId, { financialYear }),
-      getCustomerOnAccountBalance(customerId),
+    const [allBills, onAccountBalance, ledgerResult] = await Promise.all([
+      getCustomerBills(customerId, {
+        startDate: reportDateRange.startDate,
+        endDate: reportDateRange.endDate,
+        asOfDate: reportDateRange.endDate,
+      }),
+      getCustomerOnAccountBalance(customerId, reportDateRange),
+      getCustomerLedger(customerId, {
+        financialYear,
+        startDate,
+        endDate,
+        page: 1,
+        limit: 1,
+      }),
     ]);
+
+    const sourceBills =
+      ledgerResult.summary.openingBalanceSource === "PREVIOUS_CLOSING_BALANCE"
+        ? allBills.filter((b) => !b.isOpeningBalance)
+        : allBills;
 
     // ─── BUG 5 FIX ────────────────────────────────────────────────────────────
     // Opening balance bills are ledger anchors, not transactional bills.
     // Separate them out BEFORE applying the status filter so they are never
     // accidentally excluded by a status=PAID / status=UNPAID query.
-    const openingBalanceBills = allBills.filter((b) => b.isOpeningBalance);
-    const transactionalBills = allBills.filter((b) => !b.isOpeningBalance);
-
+    const openingBalanceBills = sourceBills.filter((b) => b.isOpeningBalance);
+    const transactionalBills = sourceBills.filter((b) => !b.isOpeningBalance);
     const filteredTransactional =
       statusFilter && statusFilter.length > 0
         ? transactionalBills.filter((b) => statusFilter.includes(b.status))
@@ -737,11 +762,21 @@ const getBills = async (req, res) => {
     // Net pending = sum of bill pending amounts MINUS the on-account credit.
     // Clamped to 0 so it never goes negative in the summary (surplus is shown
     // separately via the onAccount field).
-    const grossPending = filteredBills.reduce(
+    const filteredGrossPending = filteredBills.reduce(
       (s, b) => s + (b.pendingAmount ?? 0),
       0,
     );
-    const totalPending = Math.max(0, grossPending - onAccountBalance);
+    const grossPending = sourceBills.reduce(
+      (s, b) => s + (b.pendingAmount ?? 0),
+      0,
+    );
+    const billWiseNetPending = grossPending - onAccountBalance;
+    const ledgerClosingBalance = ledgerResult.summary.closingBalance;
+    const ledgerReceivable = Math.max(0, ledgerClosingBalance);
+    const ledgerPayable = Math.max(0, -ledgerClosingBalance);
+    const reconciliationDifference =
+      Math.round((billWiseNetPending - ledgerClosingBalance) * 100) / 100;
+    const ledgerAdjustment = Math.round(-reconciliationDifference * 100) / 100;
 
     const shaped = filteredBills.map((b) => ({
       id: b.id,
@@ -757,6 +792,31 @@ const getBills = async (req, res) => {
       isOpeningBalance: b.isOpeningBalance,
       status: b.status,
     }));
+
+    const ledgerAdjustmentEntry =
+      Math.abs(ledgerAdjustment) >= 0.01
+        ? {
+            id: null,
+            invoiceDate: reportDateRange.startDate,
+            invoiceno:
+              ledgerResult.summary.openingBalanceSource ===
+              "PREVIOUS_CLOSING_BALANCE"
+                ? "B/F"
+                : "LEDGER-ADJUSTMENT",
+            mongoInvoiceId: null,
+            debitNoteAmount: 0,
+            creditNoteAmount: 0,
+            adjustedAmount: ledgerAdjustment,
+            allocatedAmount: 0,
+            pendingAmount: ledgerAdjustment,
+            openingAmount: ledgerAdjustment,
+            isOpeningBalance:
+              ledgerResult.summary.openingBalanceSource ===
+              "PREVIOUS_CLOSING_BALANCE",
+            status:
+              ledgerAdjustment > 0 ? "LEDGER_ADJUSTMENT" : "LEDGER_CREDIT",
+          }
+        : null;
 
     // ─── BUG 6 FIX ────────────────────────────────────────────────────────────
     // On-account balance is a credit, so pendingAmount should be negative
@@ -781,7 +841,11 @@ const getBills = async (req, res) => {
     // data has N+1 rows (bills + ON-ACCOUNT entry).
     // summary.total must reflect the full data array length, not just filteredBills,
     // so the frontend can rely on it for table rendering / pagination.
-    const data = [...shaped, onAccountEntry];
+    const data = [
+      ...shaped,
+      ...(ledgerAdjustmentEntry ? [ledgerAdjustmentEntry] : []),
+      onAccountEntry,
+    ];
 
     // ─── BUG 1 FIX ────────────────────────────────────────────────────────────
     // byStatus counts are derived from ALL bills (unfiltered transactional set),
@@ -794,12 +858,24 @@ const getBills = async (req, res) => {
       data,
       summary: {
         // Total unfiltered bill count (excludes the synthetic ON-ACCOUNT row)
-        total: allBills.length,
+        total: sourceBills.length + (ledgerAdjustmentEntry ? 1 : 0),
         // Count actually returned in data (excludes ON-ACCOUNT row)
         filtered: filteredBills.length,
         totalAdjustedAmount: Math.round(totalAdjustedAmount * 100) / 100,
-        totalPending: Math.round(totalPending * 100) / 100,
+        totalPending: Math.round(ledgerReceivable * 100) / 100,
         grossPending: Math.round(grossPending * 100) / 100,
+        filteredGrossPending: Math.round(filteredGrossPending * 100) / 100,
+        billWiseNetPending: Math.round(billWiseNetPending * 100) / 100,
+        ledgerClosingBalance: Math.round(ledgerClosingBalance * 100) / 100,
+        ledgerBalanceType: ledgerResult.summary.balanceType,
+        ledgerReceivable: Math.round(ledgerReceivable * 100) / 100,
+        ledgerPayable: Math.round(ledgerPayable * 100) / 100,
+        reconciliationDifference,
+        ledgerAdjustment,
+        adjustedBillWiseNetPending:
+          Math.round((billWiseNetPending + ledgerAdjustment) * 100) / 100,
+        isReconciled: true,
+        dateRange: ledgerResult.summary.dateRange,
         totalDebitNoteAmount: Math.round(totalDebitNoteAmount * 100) / 100,
         totalCreditNoteAmount: Math.round(totalCreditNoteAmount * 100) / 100,
         onAccount: Math.round(onAccountBalance * 100) / 100,
