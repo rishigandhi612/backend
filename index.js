@@ -60,6 +60,48 @@ app.get("/", (req, res) => {
   res.send("server is running");
 });
 
+// Health check endpoint (no auth required)
+
+app.get("/health", async (req, res) => {
+  const health = {
+    status: "ok",
+
+    timestamp: new Date().toISOString(),
+
+    uptime: process.uptime(),
+
+    services: {
+      mongodb: "unknown",
+
+      postgres: "unknown",
+    },
+  };
+
+  try {
+    const mongoose = require("mongoose");
+
+    health.services.mongodb =
+      mongoose.connection.readyState === 1 ? "ok" : "down";
+  } catch (err) {
+    health.services.mongodb = "error";
+  }
+
+  try {
+    const prisma = require("./config/prisma");
+
+    await prisma.$queryRaw`SELECT 1`;
+
+    health.services.postgres = "ok";
+  } catch (err) {
+    health.services.postgres = "down";
+  }
+
+  const isHealthy =
+    health.services.mongodb === "ok" && health.services.postgres === "ok";
+
+  res.status(isHealthy ? 200 : 503).json(health);
+});
+
 // Routes
 const customerRoutes = require("./routes/customer.routes");
 app.use("/customer", CheckAuth, customerRoutes);
