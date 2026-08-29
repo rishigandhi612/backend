@@ -74,7 +74,6 @@ async function main() {
   const range = resolveDateRange(opts);
   const customerIds = await getCustomerIds();
   const mismatches = [];
-  const adjustments = [];
   const errors = [];
 
   console.log("=".repeat(90));
@@ -85,52 +84,36 @@ async function main() {
 
   for (const customerId of customerIds) {
     try {
+      const hasExplicitScope = Boolean(
+        opts.financialYear || opts.startDate || opts.endDate,
+      );
+      const billQuery = hasExplicitScope
+        ? { ...opts, asOfDate: range.endDate }
+        : {};
+      const onAccountQuery = hasExplicitScope ? range : {};
       const [ledgerResult, bills, onAccountBalance] = await Promise.all([
         getCustomerLedger(customerId, { ...opts, page: 1, limit: 1 }),
-        getCustomerBills(customerId, {
-          startDate: range.startDate,
-          endDate: range.endDate,
-          asOfDate: range.endDate,
-        }),
-        getCustomerOnAccountBalance(customerId, range),
+        getCustomerBills(customerId, billQuery),
+        getCustomerOnAccountBalance(customerId, onAccountQuery),
       ]);
 
-      const sourceBills =
-        ledgerResult.summary.openingBalanceSource === "PREVIOUS_CLOSING_BALANCE"
-          ? bills.filter((bill) => !bill.isOpeningBalance)
-          : bills;
       const billWiseGrossPending = toFloat(
-        sourceBills.reduce((sum, bill) => sum + toFloat(bill.pendingAmount), 0),
+        bills.reduce((sum, bill) => sum + toFloat(bill.pendingAmount), 0),
       );
       const billWiseNetPending = toFloat(
         billWiseGrossPending - toFloat(onAccountBalance),
       );
       const ledgerClosing = toFloat(ledgerResult.summary.closingBalance);
       const difference = toFloat(ledgerClosing - billWiseNetPending);
-      const adjustedBillWiseNetPending = toFloat(
-        billWiseNetPending + difference,
-      );
-      const adjustedDifference = toFloat(
-        ledgerClosing - adjustedBillWiseNetPending,
-      );
 
       if (Math.abs(difference) > tolerance) {
-        adjustments.push({
-          customerId,
-          ledgerClosing,
-          billWiseNetPending,
-          ledgerAdjustment: difference,
-        });
-      }
-
-      if (Math.abs(adjustedDifference) > tolerance) {
         mismatches.push({
           customerId,
           ledgerClosing,
           billWiseGrossPending,
           onAccountBalance,
           billWiseNetPending,
-          difference: adjustedDifference,
+          difference,
         });
       }
     } catch (error) {
@@ -151,19 +134,6 @@ async function main() {
     }
   }
 
-  if (adjustments.length > 0) {
-    console.log("\nLedger adjustment rows needed");
-    console.log("-".repeat(90));
-    console.log(
-      `${"Customer".padEnd(26)} ${"Ledger".padStart(14)} ${"RawBillNet".padStart(14)} ${"Adjustment".padStart(14)}`,
-    );
-    for (const row of adjustments) {
-      console.log(
-        `${row.customerId.padEnd(26)} ${money(row.ledgerClosing).padStart(14)} ${money(row.billWiseNetPending).padStart(14)} ${money(row.ledgerAdjustment).padStart(14)}`,
-      );
-    }
-  }
-
   if (errors.length > 0) {
     console.log("\nErrors");
     console.log("-".repeat(90));
@@ -176,7 +146,6 @@ async function main() {
   console.log("-".repeat(90));
   console.log(`Audited customers : ${customerIds.length}`);
   console.log(`Mismatches        : ${mismatches.length}`);
-  console.log(`Adjustments       : ${adjustments.length}`);
   console.log(`Errors            : ${errors.length}`);
   console.log("=".repeat(90));
 }

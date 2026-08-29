@@ -33,11 +33,9 @@ const syncInvoiceToBill = async (invoice) => {
   const invoiceDate = invoice.createdAt ?? new Date();
   const financialYear = getFinancialYear(invoiceDate);
 
-  // Determine allocatedAmount from Mongo's paidAmount if available
-  const allocatedFromMongo = parseFloat(invoice.paidAmount ?? 0) || 0;
-
   const invoiceNumber = invoice.invoiceNumber;
   const mongoId = invoice._id.toString();
+  const customerId = invoice.customer.toString();
 
   // Try to find an existing Bill by invoiceNumber first
   const existingByInvoiceNumber = await prisma.bill.findUnique({
@@ -45,6 +43,13 @@ const syncInvoiceToBill = async (invoice) => {
   });
 
   if (existingByInvoiceNumber) {
+    if (existingByInvoiceNumber.customerId !== customerId) {
+      console.warn(
+        `[syncInvoiceToBill] customerId mismatch for invoiceNumber=${invoiceNumber}: ` +
+          `Bill has ${existingByInvoiceNumber.customerId}, Mongo invoice has ${customerId}. Overwriting.`,
+      );
+    }
+
     return prisma.bill.update({
       where: { id: existingByInvoiceNumber.id },
       data: {
@@ -52,6 +57,7 @@ const syncInvoiceToBill = async (invoice) => {
         mongoInvoiceId: mongoId,
         invoiceDate,
         financialYear,
+        customerId,
         // allocatedAmount: allocatedFromMongo,
       },
     });
@@ -63,7 +69,13 @@ const syncInvoiceToBill = async (invoice) => {
   });
 
   if (existingByMongoId) {
-    // Update existing record (ensure invoiceNumber is set)
+    if (existingByMongoId.customerId !== customerId) {
+      console.warn(
+        `[syncInvoiceToBill] customerId mismatch for mongoInvoiceId=${mongoId}: ` +
+          `Bill has ${existingByMongoId.customerId}, Mongo invoice has ${customerId}. Overwriting.`,
+      );
+    }
+
     return prisma.bill.update({
       where: { id: existingByMongoId.id },
       data: {
@@ -71,6 +83,7 @@ const syncInvoiceToBill = async (invoice) => {
         billAmount,
         invoiceDate,
         financialYear,
+        customerId,
         // allocatedAmount: allocatedFromMongo,
       },
     });
@@ -81,7 +94,7 @@ const syncInvoiceToBill = async (invoice) => {
     data: {
       mongoInvoiceId: mongoId,
       invoiceNumber,
-      customerId: invoice.customer.toString(),
+      customerId,
       billAmount,
       // allocatedAmount: allocatedFromMongo,
       isOpeningBalance: false,
@@ -90,7 +103,6 @@ const syncInvoiceToBill = async (invoice) => {
     },
   });
 };
-
 /**
  * Recalculate a Bill's allocatedAmount after a payment allocation changes.
  * Only updates allocatedAmount — status and pendingAmount are computed on read.

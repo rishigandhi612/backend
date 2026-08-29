@@ -1299,18 +1299,37 @@ const deleteReceipt = async (voucherRef) => {
       );
       const credits = await tx.customerCredit.findMany({
         where: { sourceVoucherId: voucher.id },
+        select: { id: true, sourceAllocationId: true },
       });
 
       const creditIds = credits.map((credit) => credit.id);
+      const sourceAllocationIds = credits.map(
+        (credit) => credit.sourceAllocationId,
+      );
+      const creditConsumptions = creditIds.length
+        ? await tx.creditConsumption.findMany({
+            where: { creditId: { in: creditIds } },
+            select: { billId: true },
+          })
+        : [];
+      const consumedCreditBillIds = creditConsumptions.map(
+        (consumption) => consumption.billId,
+      );
 
       await tx.creditConsumption.deleteMany({
         where: { creditId: { in: creditIds } },
       });
       await tx.billAllocation.deleteMany({
-        where: { customerCreditId: { in: creditIds } },
+        where: {
+          customerCreditId: { in: creditIds },
+          id: { notIn: sourceAllocationIds },
+        },
       });
       await tx.customerCredit.deleteMany({
         where: { id: { in: creditIds } },
+      });
+      await tx.billAllocation.deleteMany({
+        where: { id: { in: sourceAllocationIds } },
       });
 
       await tx.voucher.delete({
@@ -1318,7 +1337,11 @@ const deleteReceipt = async (voucherRef) => {
       });
 
       for (const billId of [
-        ...new Set([...affectedBillIds, ...reversedCreditBillIds]),
+        ...new Set([
+          ...affectedBillIds,
+          ...reversedCreditBillIds,
+          ...consumedCreditBillIds,
+        ]),
       ]) {
         await recalculateBillAllocated(billId, tx);
       }

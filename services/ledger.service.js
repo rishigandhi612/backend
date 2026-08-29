@@ -20,6 +20,7 @@ const {
   getPostedNoteTotalsBeforeDate,
   getPostedNotesForCustomer,
 } = require("./invoiceNote.service");
+const { getCustomerOnAccountBalance } = require("./voucher.service");
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -418,6 +419,10 @@ const getCustomerLedger = async (customerId, opts = {}) => {
 const getOutstandingBillsReport = async (opts = {}) => {
   const { customerId, page = 1, limit = 50 } = opts;
   const { startDate, endDate } = resolveDateRange(opts);
+  const hasExplicitScope = Boolean(
+    opts.financialYear || opts.startDate || opts.endDate,
+  );
+  const onAccountQuery = hasExplicitScope ? { startDate, endDate } : {};
 
   const where = {
     invoiceDate: { gte: startDate, lte: endDate },
@@ -430,8 +435,23 @@ const getOutstandingBillsReport = async (opts = {}) => {
   });
 
   // Filter to only outstanding (not fully paid) after hydration
-  const outstanding = (await enrichBillsWithPostedNotes(bills, { asOfDate: endDate }))
-    .filter((b) => b.status !== "PAID");
+  const outstanding = (
+    await enrichBillsWithPostedNotes(bills, { asOfDate: endDate })
+  ).filter((b) => b.status !== "PAID");
+
+  const balanceCustomerIds = customerId
+    ? [customerId]
+    : [...new Set(outstanding.map((b) => b.customerId).filter(Boolean))];
+  const onAccountEntries = await Promise.all(
+    balanceCustomerIds.map(async (id) => [
+      id,
+      await getCustomerOnAccountBalance(id, onAccountQuery),
+    ]),
+  );
+  const onAccountByCustomerId = Object.fromEntries(onAccountEntries);
+  const totalOnAccount = toFloat(
+    onAccountEntries.reduce((s, [, balance]) => s + balance, 0),
+  );
 
   // ── Totals ─────────────────────────────────────────────────────────────────
 
@@ -447,6 +467,7 @@ const getOutstandingBillsReport = async (opts = {}) => {
   const totalPending = toFloat(
     outstanding.reduce((s, b) => s + b.pendingAmount, 0),
   );
+  const netPending = toFloat(Math.max(0, totalPending - totalOnAccount));
 
   const byStatus = {
     UNPAID: outstanding.filter((b) => b.status === "UNPAID").length,
@@ -457,7 +478,10 @@ const getOutstandingBillsReport = async (opts = {}) => {
   // ── Paginate ───────────────────────────────────────────────────────────────
 
   const skip = (page - 1) * limit;
-  const paged = outstanding.slice(skip, skip + limit);
+  const paged = outstanding.slice(skip, skip + limit).map((bill) => ({
+    ...bill,
+    onAccountBalance: toFloat(onAccountByCustomerId[bill.customerId] ?? 0),
+  }));
 
   return {
     summary: {
@@ -466,9 +490,14 @@ const getOutstandingBillsReport = async (opts = {}) => {
       totalBillAmount,
       totalAllocated,
       totalPending,
+      grossPending: totalPending,
+      onAccount: totalOnAccount,
+      totalOnAccount,
+      netPending,
       byStatus,
       dateRange: { startDate, endDate },
     },
+    onAccountBalances: onAccountByCustomerId,
     data: paged,
     pagination: {
       page,

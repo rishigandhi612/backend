@@ -699,14 +699,20 @@ const getBills = async (req, res) => {
       startDate,
       endDate,
     });
+    const hasExplicitScope = Boolean(financialYear || startDate || endDate);
+    const billQuery = hasExplicitScope
+      ? {
+          financialYear,
+          startDate,
+          endDate,
+          asOfDate: reportDateRange.endDate,
+        }
+      : {};
+    const onAccountQuery = hasExplicitScope ? reportDateRange : {};
 
     const [allBills, onAccountBalance, ledgerResult] = await Promise.all([
-      getCustomerBills(customerId, {
-        startDate: reportDateRange.startDate,
-        endDate: reportDateRange.endDate,
-        asOfDate: reportDateRange.endDate,
-      }),
-      getCustomerOnAccountBalance(customerId, reportDateRange),
+      getCustomerBills(customerId, billQuery),
+      getCustomerOnAccountBalance(customerId, onAccountQuery),
       getCustomerLedger(customerId, {
         financialYear,
         startDate,
@@ -716,17 +722,12 @@ const getBills = async (req, res) => {
       }),
     ]);
 
-    const sourceBills =
-      ledgerResult.summary.openingBalanceSource === "PREVIOUS_CLOSING_BALANCE"
-        ? allBills.filter((b) => !b.isOpeningBalance)
-        : allBills;
-
     // ─── BUG 5 FIX ────────────────────────────────────────────────────────────
     // Opening balance bills are ledger anchors, not transactional bills.
     // Separate them out BEFORE applying the status filter so they are never
     // accidentally excluded by a status=PAID / status=UNPAID query.
-    const openingBalanceBills = sourceBills.filter((b) => b.isOpeningBalance);
-    const transactionalBills = sourceBills.filter((b) => !b.isOpeningBalance);
+    const openingBalanceBills = allBills.filter((b) => b.isOpeningBalance);
+    const transactionalBills = allBills.filter((b) => !b.isOpeningBalance);
     const filteredTransactional =
       statusFilter && statusFilter.length > 0
         ? transactionalBills.filter((b) => statusFilter.includes(b.status))
@@ -766,7 +767,7 @@ const getBills = async (req, res) => {
       (s, b) => s + (b.pendingAmount ?? 0),
       0,
     );
-    const grossPending = sourceBills.reduce(
+    const grossPending = allBills.reduce(
       (s, b) => s + (b.pendingAmount ?? 0),
       0,
     );
@@ -776,7 +777,6 @@ const getBills = async (req, res) => {
     const ledgerPayable = Math.max(0, -ledgerClosingBalance);
     const reconciliationDifference =
       Math.round((billWiseNetPending - ledgerClosingBalance) * 100) / 100;
-    const ledgerAdjustment = Math.round(-reconciliationDifference * 100) / 100;
 
     const shaped = filteredBills.map((b) => ({
       id: b.id,
@@ -792,31 +792,6 @@ const getBills = async (req, res) => {
       isOpeningBalance: b.isOpeningBalance,
       status: b.status,
     }));
-
-    const ledgerAdjustmentEntry =
-      Math.abs(ledgerAdjustment) >= 0.01
-        ? {
-            id: null,
-            invoiceDate: reportDateRange.startDate,
-            invoiceno:
-              ledgerResult.summary.openingBalanceSource ===
-              "PREVIOUS_CLOSING_BALANCE"
-                ? "B/F"
-                : "LEDGER-ADJUSTMENT",
-            mongoInvoiceId: null,
-            debitNoteAmount: 0,
-            creditNoteAmount: 0,
-            adjustedAmount: ledgerAdjustment,
-            allocatedAmount: 0,
-            pendingAmount: ledgerAdjustment,
-            openingAmount: ledgerAdjustment,
-            isOpeningBalance:
-              ledgerResult.summary.openingBalanceSource ===
-              "PREVIOUS_CLOSING_BALANCE",
-            status:
-              ledgerAdjustment > 0 ? "LEDGER_ADJUSTMENT" : "LEDGER_CREDIT",
-          }
-        : null;
 
     // ─── BUG 6 FIX ────────────────────────────────────────────────────────────
     // On-account balance is a credit, so pendingAmount should be negative
@@ -841,11 +816,7 @@ const getBills = async (req, res) => {
     // data has N+1 rows (bills + ON-ACCOUNT entry).
     // summary.total must reflect the full data array length, not just filteredBills,
     // so the frontend can rely on it for table rendering / pagination.
-    const data = [
-      ...shaped,
-      ...(ledgerAdjustmentEntry ? [ledgerAdjustmentEntry] : []),
-      onAccountEntry,
-    ];
+    const data = [...shaped, onAccountEntry];
 
     // ─── BUG 1 FIX ────────────────────────────────────────────────────────────
     // byStatus counts are derived from ALL bills (unfiltered transactional set),
@@ -858,11 +829,11 @@ const getBills = async (req, res) => {
       data,
       summary: {
         // Total unfiltered bill count (excludes the synthetic ON-ACCOUNT row)
-        total: sourceBills.length + (ledgerAdjustmentEntry ? 1 : 0),
+        total: allBills.length,
         // Count actually returned in data (excludes ON-ACCOUNT row)
         filtered: filteredBills.length,
         totalAdjustedAmount: Math.round(totalAdjustedAmount * 100) / 100,
-        totalPending: Math.round(ledgerReceivable * 100) / 100,
+        totalPending: Math.round(Math.max(0, billWiseNetPending) * 100) / 100,
         grossPending: Math.round(grossPending * 100) / 100,
         filteredGrossPending: Math.round(filteredGrossPending * 100) / 100,
         billWiseNetPending: Math.round(billWiseNetPending * 100) / 100,
@@ -871,10 +842,7 @@ const getBills = async (req, res) => {
         ledgerReceivable: Math.round(ledgerReceivable * 100) / 100,
         ledgerPayable: Math.round(ledgerPayable * 100) / 100,
         reconciliationDifference,
-        ledgerAdjustment,
-        adjustedBillWiseNetPending:
-          Math.round((billWiseNetPending + ledgerAdjustment) * 100) / 100,
-        isReconciled: true,
+        isReconciled: Math.abs(reconciliationDifference) < 0.01,
         dateRange: ledgerResult.summary.dateRange,
         totalDebitNoteAmount: Math.round(totalDebitNoteAmount * 100) / 100,
         totalCreditNoteAmount: Math.round(totalCreditNoteAmount * 100) / 100,

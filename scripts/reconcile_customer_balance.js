@@ -50,32 +50,29 @@ async function main() {
   }
 
   const range = resolveDateRange(opts);
+  const hasExplicitScope = Boolean(
+    opts.financialYear || opts.startDate || opts.endDate,
+  );
+  const billQuery = hasExplicitScope
+    ? { ...opts, asOfDate: range.endDate }
+    : {};
+  const onAccountQuery = hasExplicitScope ? range : {};
   const ledgerResult = await getCustomerLedger(customerId, {
     ...opts,
     page: 1,
     limit: 1,
   });
   const [bills, onAccountBalance] = await Promise.all([
-    getCustomerBills(customerId, {
-      startDate: range.startDate,
-      endDate: range.endDate,
-      asOfDate: range.endDate,
-    }),
-    getCustomerOnAccountBalance(customerId, range),
+    getCustomerBills(customerId, billQuery),
+    getCustomerOnAccountBalance(customerId, onAccountQuery),
   ]);
 
-  const sourceBills =
-    ledgerResult.summary.openingBalanceSource === "PREVIOUS_CLOSING_BALANCE"
-      ? bills.filter((bill) => !bill.isOpeningBalance)
-      : bills;
-
   const billWiseGrossPending = toFloat(
-    sourceBills.reduce((sum, bill) => sum + toFloat(bill.pendingAmount), 0),
+    bills.reduce((sum, bill) => sum + toFloat(bill.pendingAmount), 0),
   );
   const billWiseNetPending = toFloat(billWiseGrossPending - onAccountBalance);
   const ledgerClosing = toFloat(ledgerResult.summary.closingBalance);
   const difference = toFloat(ledgerClosing - billWiseNetPending);
-  const adjustedBillWiseNetPending = toFloat(billWiseNetPending + difference);
 
   console.log("=".repeat(80));
   console.log(`Customer: ${customerId}`);
@@ -86,11 +83,10 @@ async function main() {
   console.log(`On-account balance         : ${money(onAccountBalance)}`);
   console.log(`Bill-wise net pending      : ${money(billWiseNetPending)}`);
   console.log(`Ledger - bill-wise net     : ${money(difference)}`);
-  console.log(`Adjusted bill-wise net     : ${money(adjustedBillWiseNetPending)}`);
   console.log(`Ledger opening source      : ${ledgerResult.summary.openingBalanceSource}`);
   console.log(`Ledger opening balance     : ${money(ledgerResult.summary.openingBalance)}`);
 
-  const billIds = sourceBills.map((bill) => bill.id);
+  const billIds = bills.map((bill) => bill.id);
   const billIdSet = new Set(billIds);
 
   const [
