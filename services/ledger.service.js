@@ -104,42 +104,42 @@ const getCustomerOpeningContext = async (customerId, startDate, endDate) => {
     previousNotes,
     currentOpeningBills,
   ] = await Promise.all([
-      prisma.bill.aggregate({
-        where: {
-          customerId,
-          invoiceDate: { lt: startDate },
-        },
-        _sum: { billAmount: true },
-        _count: { id: true },
-      }),
-      prisma.voucher.aggregate({
-        where: {
-          customerId,
-          type: "RECEIPT",
-          voucherDate: { lt: startDate },
-        },
-        _sum: { totalAmount: true },
-        _count: { id: true },
-      }),
-      prisma.voucher.aggregate({
-        where: {
-          customerId,
-          type: "PAYMENT",
-          voucherDate: { lt: startDate },
-        },
-        _sum: { totalAmount: true },
-        _count: { id: true },
-      }),
-      getPostedNoteTotalsBeforeDate(customerId, startDate),
-      prisma.bill.findMany({
-        where: {
-          customerId,
-          isOpeningBalance: true,
-          invoiceDate: { gte: startDate, lte: endDate },
-        },
-        orderBy: { invoiceDate: "asc" },
-      }),
-    ]);
+    prisma.bill.aggregate({
+      where: {
+        customerId,
+        invoiceDate: { lt: startDate },
+      },
+      _sum: { billAmount: true },
+      _count: { id: true },
+    }),
+    prisma.voucher.aggregate({
+      where: {
+        customerId,
+        type: "RECEIPT",
+        voucherDate: { lt: startDate },
+      },
+      _sum: { totalAmount: true },
+      _count: { id: true },
+    }),
+    prisma.voucher.aggregate({
+      where: {
+        customerId,
+        type: "PAYMENT",
+        voucherDate: { lt: startDate },
+      },
+      _sum: { totalAmount: true },
+      _count: { id: true },
+    }),
+    getPostedNoteTotalsBeforeDate(customerId, startDate),
+    prisma.bill.findMany({
+      where: {
+        customerId,
+        isOpeningBalance: true,
+        invoiceDate: { gte: startDate, lte: endDate },
+      },
+      orderBy: { invoiceDate: "asc" },
+    }),
+  ]);
 
   const previousBillsTotal = toFloat(previousBills._sum.billAmount ?? 0);
   const previousReceiptsTotal = toFloat(previousReceipts._sum.totalAmount ?? 0);
@@ -159,7 +159,10 @@ const getCustomerOpeningContext = async (customerId, startDate, endDate) => {
       previousCreditNotesTotal,
   );
   const storedOpeningBalance = toFloat(
-    currentOpeningBills.reduce((sum, bill) => sum + toFloat(bill.billAmount), 0),
+    currentOpeningBills.reduce(
+      (sum, bill) => sum + toFloat(bill.billAmount),
+      0,
+    ),
   );
   const hasPreviousActivity = previousActivityCount > 0;
 
@@ -236,7 +239,10 @@ const getCustomerLedger = async (customerId, opts = {}) => {
 
   const entries = [];
 
-  if (openingContext.hasPreviousActivity && openingContext.openingBalance !== 0) {
+  if (
+    openingContext.hasPreviousActivity &&
+    openingContext.openingBalance !== 0
+  ) {
     const openingBalance = openingContext.openingBalance;
     entries.push({
       date: startDate,
@@ -417,7 +423,7 @@ const getCustomerLedger = async (customerId, opts = {}) => {
  * @param {number} [opts.limit]
  */
 const getOutstandingBillsReport = async (opts = {}) => {
-  const { customerId, page = 1, limit = 50 } = opts;
+  const { customerId, page = 1, limit = 10 } = opts;
   const { startDate, endDate } = resolveDateRange(opts);
   const hasExplicitScope = Boolean(
     opts.financialYear || opts.startDate || opts.endDate,

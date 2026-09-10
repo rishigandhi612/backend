@@ -7,6 +7,57 @@ const Customer = require("../models/customer.models");
 const mongoose = require("mongoose");
 
 /**
+ * Builds a robust "period" expression for a $project stage based on
+ * which time-grouping fields are present in _id (month / quarter / week / year only).
+ * Avoids $concat errors when a field referenced doesn't exist for the chosen groupBy.
+ */
+function buildPeriodExpression() {
+  return {
+    $switch: {
+      branches: [
+        {
+          case: { $ifNull: ["$_id.month", false] },
+          then: {
+            $concat: [
+              { $toString: "$_id.year" },
+              "-",
+              {
+                $cond: [
+                  { $lt: ["$_id.month", 10] },
+                  { $concat: ["0", { $toString: "$_id.month" }] },
+                  { $toString: "$_id.month" },
+                ],
+              },
+            ],
+          },
+        },
+        {
+          case: { $ifNull: ["$_id.quarter", false] },
+          then: {
+            $concat: [
+              { $toString: "$_id.year" },
+              "-Q",
+              { $toString: "$_id.quarter" },
+            ],
+          },
+        },
+        {
+          case: { $ifNull: ["$_id.week", false] },
+          then: {
+            $concat: [
+              { $toString: "$_id.year" },
+              "-W",
+              { $toString: "$_id.week" },
+            ],
+          },
+        },
+      ],
+      default: { $toString: "$_id.year" },
+    },
+  };
+}
+
+/**
  * Get quantity sold by width with filters
  * Supports filtering by date range, product, customer, and grouping options
  */
@@ -34,7 +85,12 @@ const getQuantitySoldByWidth = async (req, res) => {
     }
 
     if (customerId) {
-      matchStage.customer = mongoose.Types.ObjectId(customerId);
+      if (!mongoose.Types.ObjectId.isValid(customerId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid customer ID format" });
+      }
+      matchStage.customer = new mongoose.Types.ObjectId(customerId);
     }
 
     // Build aggregation pipeline
@@ -42,8 +98,13 @@ const getQuantitySoldByWidth = async (req, res) => {
 
     // Add product filter after unwind
     if (productId) {
+      if (!mongoose.Types.ObjectId.isValid(productId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid product ID format" });
+      }
       pipeline.push({
-        $match: { "products.product": mongoose.Types.ObjectId(productId) },
+        $match: { "products.product": new mongoose.Types.ObjectId(productId) },
       });
     }
 
@@ -62,6 +123,21 @@ const getQuantitySoldByWidth = async (req, res) => {
         });
       }
     }
+
+    // Cast numeric fields that may be stored as strings before any $sum/$avg
+    pipeline.push({
+      $addFields: {
+        "products.quantity_num": {
+          $toDouble: { $ifNull: ["$products.quantity", 0] },
+        },
+        "products.total_price_num": {
+          $toDouble: { $ifNull: ["$products.total_price", 0] },
+        },
+        "products.unit_price_num": {
+          $toDouble: { $ifNull: ["$products.unit_price", 0] },
+        },
+      },
+    });
 
     // Define grouping based on time period
     let timeGrouping = {};
@@ -93,9 +169,9 @@ const getQuantitySoldByWidth = async (req, res) => {
           width: "$products.width",
           ...timeGrouping,
         },
-        totalQuantity: { $sum: "$products.quantity" },
-        totalRevenue: { $sum: "$products.total_price" },
-        averageUnitPrice: { $avg: "$products.unit_price" },
+        totalQuantity: { $sum: "$products.quantity_num" },
+        totalRevenue: { $sum: "$products.total_price_num" },
+        averageUnitPrice: { $avg: "$products.unit_price_num" },
         invoiceCount: { $sum: 1 },
         productNames: { $addToSet: "$products.name" },
       },
@@ -106,20 +182,8 @@ const getQuantitySoldByWidth = async (req, res) => {
       $project: {
         _id: 0,
         width: "$_id.width",
-        period: {
-          $concat: [
-            { $toString: "$_id.year" },
-            "-",
-            {
-              $cond: [
-                { $lt: ["$_id.month", 10] },
-                { $concat: ["0", { $toString: "$_id.month" }] },
-                { $toString: "$_id.month" },
-              ],
-            },
-          ],
-        },
-        totalQuantity: 1,
+        period: buildPeriodExpression(),
+        totalQuantity: { $round: ["$totalQuantity", 2] },
         totalRevenue: { $round: ["$totalRevenue", 2] },
         averageUnitPrice: { $round: ["$averageUnitPrice", 2] },
         invoiceCount: 1,
@@ -197,17 +261,37 @@ const getWidthDistribution = async (req, res) => {
     const pipeline = [{ $match: matchStage }, { $unwind: "$products" }];
 
     if (productId) {
+      if (!mongoose.Types.ObjectId.isValid(productId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid product ID format" });
+      }
       pipeline.push({
-        $match: { "products.product": mongoose.Types.ObjectId(productId) },
+        $match: { "products.product": new mongoose.Types.ObjectId(productId) },
       });
     }
+
+    // Cast numeric fields before aggregating
+    pipeline.push({
+      $addFields: {
+        "products.quantity_num": {
+          $toDouble: { $ifNull: ["$products.quantity", 0] },
+        },
+        "products.total_price_num": {
+          $toDouble: { $ifNull: ["$products.total_price", 0] },
+        },
+        "products.unit_price_num": {
+          $toDouble: { $ifNull: ["$products.unit_price", 0] },
+        },
+      },
+    });
 
     pipeline.push({
       $group: {
         _id: "$products.width",
-        totalQuantity: { $sum: "$products.quantity" },
-        totalRevenue: { $sum: "$products.total_price" },
-        averagePrice: { $avg: "$products.unit_price" },
+        totalQuantity: { $sum: "$products.quantity_num" },
+        totalRevenue: { $sum: "$products.total_price_num" },
+        averagePrice: { $avg: "$products.unit_price_num" },
         invoiceCount: { $sum: 1 },
       },
     });
@@ -288,55 +372,81 @@ const getSalesTrends = async (req, res) => {
       createdAt: { $gte: startDate },
     };
 
-    const pipeline = [{ $match: matchStage }, { $unwind: "$products" }];
+    // NOTE: revenue here is aligned with getAnalyticsDashboard's monthlyTrend —
+    // it sums each invoice's grandTotal exactly once. Product-level filtering
+    // (productId) still works: it's applied to decide which invoices/quantities
+    // are included, but the revenue figure stays at the invoice grain so it's
+    // comparable across endpoints. If you need pre-tax, product-line revenue
+    // instead, use `totalProductRevenue` in the response.
+    const pipeline = [
+      { $match: matchStage },
+      {
+        $addFields: {
+          grandTotal_num: { $toDouble: { $ifNull: ["$grandTotal", 0] } },
+        },
+      },
+      { $unwind: "$products" },
+    ];
 
     if (productId) {
+      if (!mongoose.Types.ObjectId.isValid(productId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid product ID format" });
+      }
       pipeline.push({
-        $match: { "products.product": mongoose.Types.ObjectId(productId) },
+        $match: { "products.product": new mongoose.Types.ObjectId(productId) },
       });
     }
 
-    let timeGrouping = {};
-    if (groupBy === "month") {
-      timeGrouping = {
-        year: { $year: "$createdAt" },
-        month: { $month: "$createdAt" },
-      };
-    } else if (groupBy === "week") {
-      timeGrouping = {
-        year: { $year: "$createdAt" },
-        week: { $week: "$createdAt" },
-      };
-    }
-
-    pipeline.push({
-      $group: {
-        _id: timeGrouping,
-        totalRevenue: { $sum: "$products.total_price" },
-        totalQuantity: { $sum: "$products.quantity" },
-        invoiceCount: { $sum: 1 },
-        averageInvoiceValue: { $avg: "$grandTotal" },
+    pipeline.push(
+      {
+        $addFields: {
+          "products.quantity_num": {
+            $toDouble: { $ifNull: ["$products.quantity", 0] },
+          },
+          "products.total_price_num": {
+            $toDouble: { $ifNull: ["$products.total_price", 0] },
+          },
+        },
       },
-    });
+      // Step 1: collapse back to one row per invoice so quantity/product-revenue
+      // are summed across that invoice's matching product lines, but grandTotal
+      // and invoice identity are only counted once.
+      {
+        $group: {
+          _id: "$_id",
+          year: { $first: { $year: "$createdAt" } },
+          month: { $first: { $month: "$createdAt" } },
+          week: { $first: { $week: "$createdAt" } },
+          grandTotal: { $first: "$grandTotal_num" },
+          invoiceQuantity: { $sum: "$products.quantity_num" },
+          invoiceProductRevenue: { $sum: "$products.total_price_num" },
+        },
+      },
+      // Step 2: roll invoices up by period
+      {
+        $group: {
+          _id: {
+            year: "$year",
+            ...(groupBy === "week" ? { week: "$week" } : { month: "$month" }),
+          },
+          totalRevenue: { $sum: "$grandTotal" },
+          totalProductRevenue: { $sum: "$invoiceProductRevenue" },
+          totalQuantity: { $sum: "$invoiceQuantity" },
+          invoiceCount: { $sum: 1 },
+          averageInvoiceValue: { $avg: "$grandTotal" },
+        },
+      },
+    );
 
     pipeline.push({
       $project: {
         _id: 0,
-        period: {
-          $concat: [
-            { $toString: "$_id.year" },
-            "-",
-            {
-              $cond: [
-                { $lt: ["$_id.month", 10] },
-                { $concat: ["0", { $toString: "$_id.month" }] },
-                { $toString: "$_id.month" },
-              ],
-            },
-          ],
-        },
+        period: buildPeriodExpression(),
         totalRevenue: { $round: ["$totalRevenue", 2] },
-        totalQuantity: 1,
+        totalProductRevenue: { $round: ["$totalProductRevenue", 2] },
+        totalQuantity: { $round: ["$totalQuantity", 2] },
         invoiceCount: 1,
         averageInvoiceValue: { $round: ["$averageInvoiceValue", 2] },
       },
@@ -406,14 +516,22 @@ const getAnalyticsDashboard = async (req, res) => {
     const overallMetrics = await CustomerProduct.aggregate([
       { $match: matchStage },
       {
+        $addFields: {
+          grandTotal_num: { $toDouble: { $ifNull: ["$grandTotal", 0] } },
+          cgst_num: { $toDouble: { $ifNull: ["$cgst", 0] } },
+          sgst_num: { $toDouble: { $ifNull: ["$sgst", 0] } },
+          igst_num: { $toDouble: { $ifNull: ["$igst", 0] } },
+        },
+      },
+      {
         $group: {
           _id: null,
-          totalRevenue: { $sum: "$grandTotal" },
+          totalRevenue: { $sum: "$grandTotal_num" },
           totalInvoices: { $sum: 1 },
-          averageInvoiceValue: { $avg: "$grandTotal" },
-          totalCGST: { $sum: "$cgst" },
-          totalSGST: { $sum: "$sgst" },
-          totalIGST: { $sum: "$igst" },
+          averageInvoiceValue: { $avg: "$grandTotal_num" },
+          totalCGST: { $sum: "$cgst_num" },
+          totalSGST: { $sum: "$sgst_num" },
+          totalIGST: { $sum: "$igst_num" },
         },
       },
     ]);
@@ -423,13 +541,23 @@ const getAnalyticsDashboard = async (req, res) => {
       { $match: matchStage },
       { $unwind: "$products" },
       {
+        $addFields: {
+          "products.total_price_num": {
+            $toDouble: { $ifNull: ["$products.total_price", 0] },
+          },
+          "products.quantity_num": {
+            $toDouble: { $ifNull: ["$products.quantity", 0] },
+          },
+        },
+      },
+      {
         $group: {
           _id: {
             productId: "$products.product",
             productName: "$products.name",
           },
-          totalRevenue: { $sum: "$products.total_price" },
-          totalQuantity: { $sum: "$products.quantity" },
+          totalRevenue: { $sum: "$products.total_price_num" },
+          totalQuantity: { $sum: "$products.quantity_num" },
         },
       },
       { $sort: { totalRevenue: -1 } },
@@ -448,9 +576,14 @@ const getAnalyticsDashboard = async (req, res) => {
     const topCustomers = await CustomerProduct.aggregate([
       { $match: matchStage },
       {
+        $addFields: {
+          grandTotal_num: { $toDouble: { $ifNull: ["$grandTotal", 0] } },
+        },
+      },
+      {
         $group: {
           _id: "$customer",
-          totalPurchases: { $sum: "$grandTotal" },
+          totalPurchases: { $sum: "$grandTotal_num" },
           invoiceCount: { $sum: 1 },
         },
       },
@@ -480,10 +613,17 @@ const getAnalyticsDashboard = async (req, res) => {
       { $match: matchStage },
       { $unwind: "$products" },
       {
+        $addFields: {
+          "products.quantity_num": {
+            $toDouble: { $ifNull: ["$products.quantity", 0] },
+          },
+        },
+      },
+      {
         $group: {
           _id: "$products.width",
           count: { $sum: 1 },
-          totalQuantity: { $sum: "$products.quantity" },
+          totalQuantity: { $sum: "$products.quantity_num" },
         },
       },
       { $sort: { totalQuantity: -1 } },
@@ -501,12 +641,17 @@ const getAnalyticsDashboard = async (req, res) => {
         },
       },
       {
+        $addFields: {
+          grandTotal_num: { $toDouble: { $ifNull: ["$grandTotal", 0] } },
+        },
+      },
+      {
         $group: {
           _id: {
             year: { $year: "$createdAt" },
             month: { $month: "$createdAt" },
           },
-          revenue: { $sum: "$grandTotal" },
+          revenue: { $sum: "$grandTotal_num" },
           invoiceCount: { $sum: 1 },
         },
       },
@@ -514,19 +659,7 @@ const getAnalyticsDashboard = async (req, res) => {
       {
         $project: {
           _id: 0,
-          period: {
-            $concat: [
-              { $toString: "$_id.year" },
-              "-",
-              {
-                $cond: [
-                  { $lt: ["$_id.month", 10] },
-                  { $concat: ["0", { $toString: "$_id.month" }] },
-                  { $toString: "$_id.month" },
-                ],
-              },
-            ],
-          },
+          period: buildPeriodExpression(),
           revenue: { $round: ["$revenue", 2] },
           invoiceCount: 1,
         },
@@ -864,10 +997,30 @@ const getAverageSaleCost = async (req, res) => {
     const pipeline = [{ $match: matchStage }, { $unwind: "$products" }];
 
     if (productId) {
+      if (!mongoose.Types.ObjectId.isValid(productId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid product ID format" });
+      }
       pipeline.push({
-        $match: { "products.product": mongoose.Types.ObjectId(productId) },
+        $match: { "products.product": new mongoose.Types.ObjectId(productId) },
       });
     }
+
+    // Cast numeric fields before any $avg/$min/$max/$sum/$stdDevPop
+    pipeline.push({
+      $addFields: {
+        "products.unit_price_num": {
+          $toDouble: { $ifNull: ["$products.unit_price", 0] },
+        },
+        "products.quantity_num": {
+          $toDouble: { $ifNull: ["$products.quantity", 0] },
+        },
+        "products.total_price_num": {
+          $toDouble: { $ifNull: ["$products.total_price", 0] },
+        },
+      },
+    });
 
     // Main aggregation for average costs
     pipeline.push({
@@ -876,12 +1029,12 @@ const getAverageSaleCost = async (req, res) => {
           productId: "$products.product",
           productName: "$products.name",
         },
-        averageSalePrice: { $avg: "$products.unit_price" },
-        minSalePrice: { $min: "$products.unit_price" },
-        maxSalePrice: { $max: "$products.unit_price" },
-        totalQuantitySold: { $sum: "$products.quantity" },
-        totalRevenue: { $sum: "$products.total_price" },
-        standardDeviation: { $stdDevPop: "$products.unit_price" },
+        averageSalePrice: { $avg: "$products.unit_price_num" },
+        minSalePrice: { $min: "$products.unit_price_num" },
+        maxSalePrice: { $max: "$products.unit_price_num" },
+        totalQuantitySold: { $sum: "$products.quantity_num" },
+        totalRevenue: { $sum: "$products.total_price_num" },
+        standardDeviation: { $stdDevPop: "$products.unit_price_num" },
         sampleCount: { $sum: 1 },
       },
     });
@@ -934,9 +1087,22 @@ const getAverageSaleCost = async (req, res) => {
 
       if (productId) {
         trendPipeline.push({
-          $match: { "products.product": mongoose.Types.ObjectId(productId) },
+          $match: {
+            "products.product": new mongoose.Types.ObjectId(productId),
+          },
         });
       }
+
+      trendPipeline.push({
+        $addFields: {
+          "products.unit_price_num": {
+            $toDouble: { $ifNull: ["$products.unit_price", 0] },
+          },
+          "products.quantity_num": {
+            $toDouble: { $ifNull: ["$products.quantity", 0] },
+          },
+        },
+      });
 
       let timeGrouping = {};
       if (groupBy === "month") {
@@ -957,8 +1123,8 @@ const getAverageSaleCost = async (req, res) => {
             ...timeGrouping,
             productId: "$products.product",
           },
-          averagePrice: { $avg: "$products.unit_price" },
-          quantitySold: { $sum: "$products.quantity" },
+          averagePrice: { $avg: "$products.unit_price_num" },
+          quantitySold: { $sum: "$products.quantity_num" },
         },
       });
 
@@ -1170,11 +1336,17 @@ const getMonthlySalesDashboard = async (req, res) => {
         {
           $addFields: {
             month: { $month: "$createdAt" },
+            grandTotal_num: { $toDouble: { $ifNull: ["$grandTotal", 0] } },
             invoiceQuantity: {
               $reduce: {
                 input: "$products",
                 initialValue: 0,
-                in: { $add: ["$$value", "$$this.quantity"] },
+                in: {
+                  $add: [
+                    "$$value",
+                    { $toDouble: { $ifNull: ["$$this.quantity", 0] } },
+                  ],
+                },
               },
             },
           },
@@ -1183,7 +1355,7 @@ const getMonthlySalesDashboard = async (req, res) => {
           $group: {
             _id: "$month",
             totalQuantity: { $sum: "$invoiceQuantity" },
-            totalRevenue: { $sum: "$grandTotal" },
+            totalRevenue: { $sum: "$grandTotal_num" },
             uniqueInvoiceIds: { $addToSet: "$_id" },
           },
         },
@@ -1350,14 +1522,27 @@ const getTopPerformingProducts = async (req, res) => {
       { $match: matchStage },
       { $unwind: "$products" },
       {
+        $addFields: {
+          "products.quantity_num": {
+            $toDouble: { $ifNull: ["$products.quantity", 0] },
+          },
+          "products.total_price_num": {
+            $toDouble: { $ifNull: ["$products.total_price", 0] },
+          },
+          "products.unit_price_num": {
+            $toDouble: { $ifNull: ["$products.unit_price", 0] },
+          },
+        },
+      },
+      {
         $group: {
           _id: {
             productId: "$products.product",
             productName: "$products.name",
           },
-          totalQuantitySold: { $sum: "$products.quantity" },
-          totalRevenue: { $sum: "$products.total_price" },
-          averagePrice: { $avg: "$products.unit_price" },
+          totalQuantitySold: { $sum: "$products.quantity_num" },
+          totalRevenue: { $sum: "$products.total_price_num" },
+          averagePrice: { $avg: "$products.unit_price_num" },
           invoiceCount: { $sum: 1 },
           uniqueCustomers: { $addToSet: "$customer" },
         },
@@ -1425,17 +1610,27 @@ const getCustomerPurchasePatterns = async (req, res) => {
     }
 
     if (customerId) {
-      matchStage.customer = mongoose.Types.ObjectId(customerId);
+      if (!mongoose.Types.ObjectId.isValid(customerId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid customer ID format" });
+      }
+      matchStage.customer = new mongoose.Types.ObjectId(customerId);
     }
 
     const pipeline = [
       { $match: matchStage },
       {
+        $addFields: {
+          grandTotal_num: { $toDouble: { $ifNull: ["$grandTotal", 0] } },
+        },
+      },
+      {
         $group: {
           _id: "$customer",
-          totalPurchaseValue: { $sum: "$grandTotal" },
+          totalPurchaseValue: { $sum: "$grandTotal_num" },
           totalInvoices: { $sum: 1 },
-          averageInvoiceValue: { $avg: "$grandTotal" },
+          averageInvoiceValue: { $avg: "$grandTotal_num" },
           totalQuantityPurchased: {
             $sum: {
               $reduce: {
