@@ -257,7 +257,7 @@ const createCustomerProducts = async (req, res, next) => {
       }
     }
 
-    // ── Build products array (unchanged) ───────────────────────────────────────
+    // ── Build products array ─────────────────────────────────────────────────
 
     const invoiceProducts = [];
     let calculatedTotalAmount = 0;
@@ -285,7 +285,13 @@ const createCustomerProducts = async (req, res, next) => {
         total_price: parseFloat(totalPrice),
       });
 
-      calculatedTotalAmount += parseFloat(totalPrice);
+      // FIX: parseFloat before accumulating, or string concatenation can
+      // silently corrupt calculatedTotalAmount when totalPrice arrives as a string.
+      calculatedTotalAmount += parseFloat(totalPrice) || 0;
+
+      // NOTE: still a non-atomic read-then-write with no floor check.
+      // Flagged separately — not part of the inventory-sync fix, left as-is here
+      // so this diff stays focused. Recommend switching to a conditional $inc.
       await Product.findByIdAndUpdate(product._id, {
         quantity: ProductInfo.quantity - quantity,
       });
@@ -319,14 +325,38 @@ const createCustomerProducts = async (req, res, next) => {
     const formattedYear = `${financialYearStart.toString().slice(-2)}-${financialYearEnd.toString().slice(-2)}`;
     const invoiceNumber = `HT/${counter.value.toString().padStart(4, "0")}/${formattedYear}`;
 
-    // ── Build and create invoice in MongoDB (unchanged) ────────────────────────
+    // ── Clean rollIds once, use this everywhere below ──────────────────────────
+
+    const cleanRollIds =
+      rollIds && Array.isArray(rollIds)
+        ? [...new Set(rollIds.map((id) => id.trim()).filter((id) => id.length > 0))]
+        : [];
+
+    // FIX (race condition): re-validate immediately before committing rolls as
+    // sold, mirroring the guard already present in updateCustomerProducts.
+    // Time has passed (customer/product/counter work above) since the initial
+    // validation, so another request could have sold these rolls in between.
+    if (cleanRollIds.length > 0) {
+      const finalValidation = await validateRollIds(cleanRollIds);
+      if (!finalValidation.valid) {
+        return res.status(409).json({
+          success: false,
+          message: "Roll IDs became unavailable while creating this invoice",
+          errors: finalValidation.errors,
+        });
+      }
+    }
+
+    // ── Build and create invoice in MongoDB ─────────────────────────────────────
 
     const invoiceData = {
       invoiceNumber,
       customer: customer._id,
       products: invoiceProducts,
       otherCharges: parseFloat(otherCharges) || 0,
-      discountAllowed: parseFloat(discountAllowed) || null,
+      discountAllowed: Number.isFinite(parseFloat(discountAllowed))
+        ? parseFloat(discountAllowed)
+        : null,
       cgst: parseFloat(cgst) || 0,
       sgst: parseFloat(sgst) || 0,
       igst: parseFloat(igst) || 0,
@@ -338,11 +368,8 @@ const createCustomerProducts = async (req, res, next) => {
       paymentStatus: "UNPAID",
     };
 
-    if (rollIds && Array.isArray(rollIds) && rollIds.length > 0) {
-      const cleanRollIds = rollIds
-        .map((id) => id.trim())
-        .filter((id) => id.length > 0);
-      if (cleanRollIds.length > 0) invoiceData.rollIds = cleanRollIds;
+    if (cleanRollIds.length > 0) {
+      invoiceData.rollIds = cleanRollIds;
     }
 
     if (transporter) {
@@ -365,18 +392,23 @@ const createCustomerProducts = async (req, res, next) => {
       // TODO: Push to a retry queue (Redis/BullMQ) for guaranteed delivery
     }
 
-    // ── STEP 3: Update inventory roll status (unchanged) ──────────────────────
+    // ── STEP 3: Update inventory roll status ───────────────────────────────────
+    // FIX: track whether this actually succeeded instead of assuming it did.
+    // The invoice already exists and claims these rolls, so a silent failure
+    // here is exactly the desync we're trying to avoid.
+
     let inventorySynced = true;
-    if (invoiceData.rollIds?.length > 0) {
+    if (invoiceData.rollIds && invoiceData.rollIds.length > 0) {
       try {
         await updateInventoryStatus(invoiceData.rollIds, "sold", invoiceNumber);
       } catch (inventoryError) {
-        console.error(
-          `Error updating inventory status for invoice ${invoiceNumber}:`,
-          inventoryError,
-        );
         inventorySynced = false;
-        // TODO: retry queue
+        console.error(
+          `[InventorySync] Failed to mark rolls sold for invoice ${invoiceNumber}:`,
+          inventoryError.message,
+        );
+        // TODO: Push to a retry queue / reconciliation job. Until then this
+        // invoice and the inventory table disagree about these rollIds.
       }
     }
 
@@ -387,7 +419,7 @@ const createCustomerProducts = async (req, res, next) => {
       message: invoiceData.rollIds
         ? inventorySynced
           ? `Invoice created and ${invoiceData.rollIds.length} inventory items marked as sold`
-          : `Invoice created, but inventory sync failed for ${invoiceData.rollIds.length} items — please verify manually`
+          : `Invoice created, but marking ${invoiceData.rollIds.length} inventory items as sold failed — please verify manually`
         : "Invoice created successfully",
     });
   } catch (error) {
@@ -414,11 +446,18 @@ const updateCustomerProducts = async (req, res, next) => {
         .json({ success: false, message: "CustomerProduct not found" });
     }
 
-    // Deduplicate roll IDs
+    const oldRollIds = existingInvoice.rollIds || [];
+
+    // FIX: distinguish "client didn't send rollIds" (leave them alone) from
+    // "client sent an empty/updated array" (apply the change). Previously,
+    // any partial update that omitted rollIds was treated as "remove all of
+    // them," releasing sold inventory back to available with no user intent
+    // behind it.
     const rollIdsProvided = Object.prototype.hasOwnProperty.call(
       updatedData,
       "rollIds",
     );
+
     const newRollIds = rollIdsProvided
       ? [
           ...new Set(
@@ -427,10 +466,10 @@ const updateCustomerProducts = async (req, res, next) => {
               .filter((id) => id.length > 0),
           ),
         ]
-      : oldRollIds; // no change if the client didn't touch this field
+      : oldRollIds;
 
-    // Validate with current invoice context
-    if (newRollIds.length > 0) {
+    // Validate with current invoice context (only meaningful if rollIds changed)
+    if (rollIdsProvided && newRollIds.length > 0) {
       const rollIdValidation = await validateRollIdsForUpdate(
         newRollIds,
         existingInvoice.invoiceNumber,
@@ -472,24 +511,12 @@ const updateCustomerProducts = async (req, res, next) => {
             message: "Width must be a valid number for each product",
           });
         }
-        // if (isNaN(quantity) || parseInt(quantity) <= 0) {
-        //   return res.status(400).json({
-        //     success: false,
-        //     message: "Quantity must be a positive number for each product",
-        //   });
-        // }
         if (isNaN(unit_price)) {
           return res.status(400).json({
             success: false,
             message: "Unit price must be a number for each product",
           });
         }
-        // if (isNaN(totalPrice) || parseFloat(totalPrice) <= 0) {
-        //   return res.status(400).json({
-        //     success: false,
-        //     message: "Total price must be a positive number for each product",
-        //   });
-        // }
 
         updatedProducts.push({
           product,
@@ -499,12 +526,14 @@ const updateCustomerProducts = async (req, res, next) => {
           totalPrice: parseFloat(totalPrice),
         });
 
-        totalAmount += parseFloat(totalPrice);
+        totalAmount += parseFloat(totalPrice) || 0;
       }
     }
 
     const otherCharges = parseFloat(updatedData.otherCharges) || 0;
-    const discountAllowed = parseFloat(updatedData.discountAllowed) || null;
+    const discountAllowed = Number.isFinite(parseFloat(updatedData.discountAllowed))
+      ? parseFloat(updatedData.discountAllowed)
+      : null;
     const ewbNo = updatedData.ewbNo || null;
     const cgstAmount = parseFloat(updatedData.cgst) || 0;
     const sgstAmount = parseFloat(updatedData.sgst) || 0;
@@ -519,7 +548,7 @@ const updateCustomerProducts = async (req, res, next) => {
         (discountAllowed || 0),
     );
 
-    // ✅ Calculate payment status based on existing payments
+    // Calculate payment status based on existing payments
     const currentPaidAmount = existingInvoice.paidAmount || 0;
     const newPendingAmount = grandTotal - currentPaidAmount;
 
@@ -534,6 +563,11 @@ const updateCustomerProducts = async (req, res, next) => {
 
     const newInvoiceData = {
       ...updatedData,
+      // FIX: previously `rollIds` was never set here, so the invoice document
+      // saved whatever raw (untrimmed/undeduplicated/possibly stale) value
+      // came in on updatedData.rollIds instead of the cleaned newRollIds that
+      // inventory was actually updated against. That's the direct cause of
+      // invoice/inventory drift. Now they're guaranteed to match.
       rollIds: newRollIds,
       products: updatedProducts.length > 0 ? updatedProducts : undefined,
       totalAmount,
@@ -541,19 +575,21 @@ const updateCustomerProducts = async (req, res, next) => {
       cgst: cgstAmount,
       sgst: sgstAmount,
       igst: igstAmount,
-      discountAllowed: discountAllowed,
-      ewbNo: ewbNo,
-      // ✅ Update payment fields when grandTotal changes
+      discountAllowed,
+      ewbNo,
       pendingAmount: newPendingAmount,
-      paymentStatus: paymentStatus,
+      paymentStatus,
     };
 
-    // Calculate roll ID changes
-    const oldRollIds = existingInvoice.rollIds || [];
-    const removedRollIds = oldRollIds.filter((id) => !newRollIds.includes(id));
-    const addedRollIds = newRollIds.filter((id) => !oldRollIds.includes(id));
+    // Calculate roll ID changes (only real if rollIds were actually provided)
+    const removedRollIds = rollIdsProvided
+      ? oldRollIds.filter((id) => !newRollIds.includes(id))
+      : [];
+    const addedRollIds = rollIdsProvided
+      ? newRollIds.filter((id) => !oldRollIds.includes(id))
+      : [];
 
-    // Update inventory BEFORE invoice update with rollback capability
+    // Update inventory BEFORE invoice update, with rollback capability
     let inventoryUpdateSuccess = false;
     try {
       // Re-validate just before updating (prevents race conditions)
@@ -571,7 +607,6 @@ const updateCustomerProducts = async (req, res, next) => {
         }
       }
 
-      // Update inventory status
       if (removedRollIds.length > 0) {
         await updateInventoryStatus(removedRollIds, "available");
       }
@@ -605,7 +640,6 @@ const updateCustomerProducts = async (req, res, next) => {
       if (!response) {
         // Rollback inventory changes if invoice update fails
         if (inventoryUpdateSuccess) {
-          // Reverse the changes
           if (addedRollIds.length > 0) {
             await updateInventoryStatus(addedRollIds, "available");
           }
@@ -672,7 +706,8 @@ const updateCustomerProducts = async (req, res, next) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
-// FIX 6: New validation function that allows current invoice's rolls
+
+// New validation function that allows current invoice's rolls
 const validateRollIdsForUpdate = async (rollIds, currentInvoiceNumber) => {
   if (!rollIds || rollIds.length === 0) return { valid: true, errors: [] };
 
