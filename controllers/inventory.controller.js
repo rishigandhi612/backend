@@ -1,7 +1,8 @@
 // controllers/inventory.controller.js
 const mongoose = require("mongoose");
 const Product = require("../models/product.models");
-
+const prisma = require("../config/prisma"); 
+// or, if you have a shared client: const prisma = require("../lib/prisma");
 // Helper function to validate MongoDB ObjectId
 const isValidObjectId = (id) => {
   return mongoose.Types.ObjectId.isValid(id);
@@ -544,7 +545,13 @@ const createInventory = async (req, res) => {
 const updateInventory = async (req, res) => {
   const { id } = req.params;
   const inventoryData = req.body;
-
+const validationErrors = validateInventoryData(inventoryData);
+  if (validationErrors.length > 0) {
+    return res.status(400).json({
+      success: false,
+      errors: validationErrors,
+    });
+  }
   if (inventoryData.productId && !isValidObjectId(inventoryData.productId)) {
     return res.status(400).json({
       success: false,
@@ -798,10 +805,14 @@ const bulkUpdateInventoryStatus = async (req, res) => {
       status,
       updatedAt: new Date(),
     };
-
+if (status !== "sold") {
+  updateData.invoiceNumber = null;
+  updateData.soldAt = null;
+}
     if (status === "sold") {
       updateData.soldAt = new Date();
       if (invoiceNumber) {
+        updateData.soldAt = new Date();
         updateData.invoiceNumber = invoiceNumber;
       }
     }

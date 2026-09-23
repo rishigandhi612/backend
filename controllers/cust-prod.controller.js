@@ -285,7 +285,7 @@ const createCustomerProducts = async (req, res, next) => {
         total_price: parseFloat(totalPrice),
       });
 
-      calculatedTotalAmount += totalPrice;
+      calculatedTotalAmount += parseFloat(totalPrice);
       await Product.findByIdAndUpdate(product._id, {
         quantity: ProductInfo.quantity - quantity,
       });
@@ -366,20 +366,28 @@ const createCustomerProducts = async (req, res, next) => {
     }
 
     // ── STEP 3: Update inventory roll status (unchanged) ──────────────────────
-
-    if (invoiceData.rollIds && invoiceData.rollIds.length > 0) {
+    let inventorySynced = true;
+    if (invoiceData.rollIds?.length > 0) {
       try {
         await updateInventoryStatus(invoiceData.rollIds, "sold", invoiceNumber);
       } catch (inventoryError) {
-        console.error("Error updating inventory status:", inventoryError);
+        console.error(
+          `Error updating inventory status for invoice ${invoiceNumber}:`,
+          inventoryError,
+        );
+        inventorySynced = false;
+        // TODO: retry queue
       }
     }
 
     return res.status(201).json({
       success: true,
       data: createdInvoice,
+      inventorySynced,
       message: invoiceData.rollIds
-        ? `Invoice created and ${invoiceData.rollIds.length} inventory items marked as sold`
+        ? inventorySynced
+          ? `Invoice created and ${invoiceData.rollIds.length} inventory items marked as sold`
+          : `Invoice created, but inventory sync failed for ${invoiceData.rollIds.length} items — please verify manually`
         : "Invoice created successfully",
     });
   } catch (error) {
@@ -407,15 +415,19 @@ const updateCustomerProducts = async (req, res, next) => {
     }
 
     // Deduplicate roll IDs
-    const newRollIds = updatedData.rollIds
+    const rollIdsProvided = Object.prototype.hasOwnProperty.call(
+      updatedData,
+      "rollIds",
+    );
+    const newRollIds = rollIdsProvided
       ? [
           ...new Set(
-            updatedData.rollIds
+            (updatedData.rollIds || [])
               .map((id) => id.trim())
               .filter((id) => id.length > 0),
           ),
         ]
-      : [];
+      : oldRollIds; // no change if the client didn't touch this field
 
     // Validate with current invoice context
     if (newRollIds.length > 0) {
@@ -522,6 +534,7 @@ const updateCustomerProducts = async (req, res, next) => {
 
     const newInvoiceData = {
       ...updatedData,
+      rollIds: newRollIds,
       products: updatedProducts.length > 0 ? updatedProducts : undefined,
       totalAmount,
       grandTotal,
