@@ -329,7 +329,11 @@ const createCustomerProducts = async (req, res, next) => {
 
     const cleanRollIds =
       rollIds && Array.isArray(rollIds)
-        ? [...new Set(rollIds.map((id) => id.trim()).filter((id) => id.length > 0))]
+        ? [
+            ...new Set(
+              rollIds.map((id) => id.trim()).filter((id) => id.length > 0),
+            ),
+          ]
         : [];
 
     // FIX (race condition): re-validate immediately before committing rolls as
@@ -431,6 +435,10 @@ const updateCustomerProducts = async (req, res, next) => {
   const updatedData = req.body;
   const pid = req.params.id;
 
+  if (updatedData.transporter === "") {
+    updatedData.transporter = null;
+  }
+
   try {
     if (!pid || pid.length !== 24) {
       return res.status(400).json({
@@ -448,11 +456,6 @@ const updateCustomerProducts = async (req, res, next) => {
 
     const oldRollIds = existingInvoice.rollIds || [];
 
-    // FIX: distinguish "client didn't send rollIds" (leave them alone) from
-    // "client sent an empty/updated array" (apply the change). Previously,
-    // any partial update that omitted rollIds was treated as "remove all of
-    // them," releasing sold inventory back to available with no user intent
-    // behind it.
     const rollIdsProvided = Object.prototype.hasOwnProperty.call(
       updatedData,
       "rollIds",
@@ -468,7 +471,17 @@ const updateCustomerProducts = async (req, res, next) => {
         ]
       : oldRollIds;
 
-    // Validate with current invoice context (only meaningful if rollIds changed)
+    // NEW: explicit removal signal from the client, sanitized the same way.
+    const explicitRemovedRollIds = Array.isArray(updatedData.removedRollIds)
+      ? [
+          ...new Set(
+            updatedData.removedRollIds
+              .map((id) => id.trim())
+              .filter((id) => id.length > 0),
+          ),
+        ]
+      : [];
+
     if (rollIdsProvided && newRollIds.length > 0) {
       const rollIdValidation = await validateRollIdsForUpdate(
         newRollIds,
@@ -483,7 +496,6 @@ const updateCustomerProducts = async (req, res, next) => {
       }
     }
 
-    // Validate transporter if provided
     if (updatedData.transporter) {
       const transporterExists = await Transporter.findById(
         updatedData.transporter,
@@ -496,7 +508,6 @@ const updateCustomerProducts = async (req, res, next) => {
       }
     }
 
-    // Calculate totals and prepare invoice data
     let totalAmount = 0;
     const updatedProducts = [];
 
@@ -531,7 +542,9 @@ const updateCustomerProducts = async (req, res, next) => {
     }
 
     const otherCharges = parseFloat(updatedData.otherCharges) || 0;
-    const discountAllowed = Number.isFinite(parseFloat(updatedData.discountAllowed))
+    const discountAllowed = Number.isFinite(
+      parseFloat(updatedData.discountAllowed),
+    )
       ? parseFloat(updatedData.discountAllowed)
       : null;
     const ewbNo = updatedData.ewbNo || null;
@@ -548,7 +561,6 @@ const updateCustomerProducts = async (req, res, next) => {
         (discountAllowed || 0),
     );
 
-    // Calculate payment status based on existing payments
     const currentPaidAmount = existingInvoice.paidAmount || 0;
     const newPendingAmount = grandTotal - currentPaidAmount;
 
@@ -563,13 +575,9 @@ const updateCustomerProducts = async (req, res, next) => {
 
     const newInvoiceData = {
       ...updatedData,
-      // FIX: previously `rollIds` was never set here, so the invoice document
-      // saved whatever raw (untrimmed/undeduplicated/possibly stale) value
-      // came in on updatedData.rollIds instead of the cleaned newRollIds that
-      // inventory was actually updated against. That's the direct cause of
-      // invoice/inventory drift. Now they're guaranteed to match.
       rollIds: newRollIds,
       products: updatedProducts.length > 0 ? updatedProducts : undefined,
+      transporter: updatedData.transporter || null,
       totalAmount,
       grandTotal,
       cgst: cgstAmount,
@@ -580,19 +588,29 @@ const updateCustomerProducts = async (req, res, next) => {
       pendingAmount: newPendingAmount,
       paymentStatus,
     };
+    delete newInvoiceData.removedRollIds; // not a schema field — don't persist it onto the invoice doc
 
-    // Calculate roll ID changes (only real if rollIds were actually provided)
-    const removedRollIds = rollIdsProvided
+    // Diff-based removal (works correctly now that the frontend sends a complete rollIds list)...
+    const diffRemovedRollIds = rollIdsProvided
       ? oldRollIds.filter((id) => !newRollIds.includes(id))
       : [];
+
     const addedRollIds = rollIdsProvided
       ? newRollIds.filter((id) => !oldRollIds.includes(id))
       : [];
 
-    // Update inventory BEFORE invoice update, with rollback capability
+    // ...merged with the explicit signal from the client, both sanitized against
+    // what the invoice actually had. This way an explicit removedRollIds entry
+    // is honored even if, for whatever reason, it didn't also fall out of the
+    // rollIds diff (stale cache, client bug, partial payload, etc.) — and a
+    // bogus id that was never on this invoice can't be used to release
+    // someone else's inventory.
+    const removedRollIds = [
+      ...new Set([...diffRemovedRollIds, ...explicitRemovedRollIds]),
+    ].filter((id) => oldRollIds.includes(id));
+
     let inventoryUpdateSuccess = false;
     try {
-      // Re-validate just before updating (prevents race conditions)
       if (addedRollIds.length > 0) {
         const finalValidation = await validateRollIdsForUpdate(
           addedRollIds,
@@ -622,7 +640,6 @@ const updateCustomerProducts = async (req, res, next) => {
       inventoryUpdateSuccess = true;
     } catch (inventoryError) {
       console.error("Error updating inventory status:", inventoryError);
-
       return res.status(500).json({
         success: false,
         message: "Failed to update inventory status",
@@ -630,7 +647,6 @@ const updateCustomerProducts = async (req, res, next) => {
       });
     }
 
-    // Now update the invoice
     let response;
     try {
       response = await CustomerProduct.findByIdAndUpdate(pid, newInvoiceData, {
@@ -638,7 +654,6 @@ const updateCustomerProducts = async (req, res, next) => {
       });
 
       if (!response) {
-        // Rollback inventory changes if invoice update fails
         if (inventoryUpdateSuccess) {
           if (addedRollIds.length > 0) {
             await updateInventoryStatus(addedRollIds, "available");
@@ -651,14 +666,11 @@ const updateCustomerProducts = async (req, res, next) => {
             );
           }
         }
-
-        return res.status(404).json({
-          success: false,
-          message: "CustomerProduct not found",
-        });
+        return res
+          .status(404)
+          .json({ success: false, message: "CustomerProduct not found" });
       }
 
-      // Sync the updated invoice to PostgreSQL (best-effort)
       try {
         await syncInvoiceToBill(response);
       } catch (syncError) {
@@ -668,7 +680,6 @@ const updateCustomerProducts = async (req, res, next) => {
         );
       }
     } catch (invoiceError) {
-      // Rollback inventory changes
       if (inventoryUpdateSuccess) {
         try {
           if (addedRollIds.length > 0) {
@@ -688,7 +699,6 @@ const updateCustomerProducts = async (req, res, next) => {
           );
         }
       }
-
       throw invoiceError;
     }
 
